@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Text;
+using Parquet;
 using Parquet.Query.Expressions;
 using Parquet.Query.Internal;
 using Parquet.Query.Planning;
@@ -227,7 +228,7 @@ public sealed class ParquetQuery<TSource, TResult>
             filterColumns.UnionWith(materializationPlan.FilterColumnPaths);
             deferredColumns.UnionWith(materializationPlan.DeferredColumnPaths);
 
-            filePlans.Add(RowGroupPlanner.BuildFilePlan(filePath, reader, _pushdownFilter, fileDecisions));
+            filePlans.Add(await RowGroupPlanner.BuildFilePlanAsync(filePath, reader, _pushdownFilter, fileDecisions, cancellationToken));
         }
 
         return new ParquetQueryPlan(
@@ -271,10 +272,9 @@ public sealed class ParquetQuery<TSource, TResult>
             ? "Late Materialization: enabled"
             : "Late Materialization: not needed");
 
-        if (plan.PageIndexAvailable)
-        {
-            builder.AppendLine("Page Indexes: metadata detected, but page-level pruning is not yet wired through the public reader API.");
-        }
+        builder.AppendLine(plan.PageIndexAvailable
+            ? "Page Indexes: page-level pruning enabled when page indexes or fallback scans are available."
+            : "Page Indexes: unavailable");
 
         foreach (var file in plan.Files)
         {
@@ -286,7 +286,15 @@ public sealed class ParquetQuery<TSource, TResult>
 
             foreach (var rowGroup in file.RowGroups)
             {
-                builder.AppendLine($"  RG {rowGroup.Index}: {(rowGroup.ShouldRead ? "read" : "skip")} ({rowGroup.RowCount} rows)");
+                var pageDetails = rowGroup.PageCount > 0
+                    ? $", pages {rowGroup.SelectedPageCount}/{rowGroup.PageCount}, candidate rows <= {rowGroup.CandidateRowCountUpperBound}"
+                    : string.Empty;
+                builder.AppendLine($"  RG {rowGroup.Index}: {(rowGroup.ShouldRead ? "read" : "skip")} ({rowGroup.RowCount} rows{pageDetails})");
+                if (rowGroup.UsedFallbackPageIndex)
+                {
+                    builder.AppendLine("    page index source: computed in memory because persisted page indexes were unavailable.");
+                }
+
                 foreach (var decision in rowGroup.Decisions)
                 {
                     builder.AppendLine($"    {decision.Predicate}: {(decision.MayMatch ? "may match" : "ruled out")} via {decision.Source} ({decision.Reason})");
@@ -317,7 +325,7 @@ public sealed class ParquetQuery<TSource, TResult>
             using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
             var materializationPlan = CreateMaterializationPlan(reader.Schema);
             var serializerOptions = CreateSerializerOptions();
-            var filePlan = RowGroupPlanner.BuildFilePlan(filePath, reader, _pushdownFilter, fileDecisions);
+            var filePlan = await RowGroupPlanner.BuildFilePlanAsync(filePath, reader, _pushdownFilter, fileDecisions, cancellationToken);
             if (!filePlan.ShouldRead)
             {
                 continue;
@@ -325,6 +333,17 @@ public sealed class ParquetQuery<TSource, TResult>
 
             foreach (var rowGroup in filePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead))
             {
+                PagePruningResult pagePruning;
+                using (var rowGroupReader = reader.OpenRowGroupReader(rowGroup.Index))
+                {
+                    pagePruning = await PagePruner.PruneAsync(rowGroupReader, reader.Schema, _pushdownFilter, cancellationToken);
+                }
+
+                if (pagePruning.CandidateRowCountUpperBound == 0)
+                {
+                    continue;
+                }
+
                 if (materializationPlan.RequiresFullMaterialization)
                 {
                     var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
@@ -333,6 +352,7 @@ public sealed class ParquetQuery<TSource, TResult>
                         rowGroup.Index,
                         materializationPlan,
                         serializerOptions,
+                        pagePruning.Intervals,
                         cancellationToken);
 
                     foreach (var row in batch)
@@ -346,13 +366,14 @@ public sealed class ParquetQuery<TSource, TResult>
                     continue;
                 }
 
-                var rows = await PartialRowMaterializer<TSource>.ReadFilterRowsAsync(
+                var rowSet = await PartialRowMaterializer<TSource>.ReadFilterRowsAsync(
                     reader,
                     rowGroup.Index,
                     materializationPlan,
+                    pagePruning.Intervals,
                     cancellationToken);
 
-                var selectedIndexes = SelectMatchingIndexes(rows, rowFilter);
+                var selectedIndexes = SelectMatchingIndexes(rowSet.Rows, rowFilter);
                 if (selectedIndexes.Count == 0)
                 {
                     continue;
@@ -362,13 +383,13 @@ public sealed class ParquetQuery<TSource, TResult>
                     reader,
                     rowGroup.Index,
                     materializationPlan,
-                    rows,
+                    rowSet,
                     selectedIndexes,
                     cancellationToken);
 
                 foreach (var selectedIndex in selectedIndexes)
                 {
-                    results.Add(projector(rows[selectedIndex]));
+                    results.Add(projector(rowSet.Rows[selectedIndex]));
                 }
             }
         }
@@ -395,7 +416,7 @@ public sealed class ParquetQuery<TSource, TResult>
             using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
             var materializationPlan = CreateMaterializationPlan(reader.Schema);
             var serializerOptions = CreateSerializerOptions();
-            var filePlan = RowGroupPlanner.BuildFilePlan(filePath, reader, _pushdownFilter, fileDecisions);
+            var filePlan = await RowGroupPlanner.BuildFilePlanAsync(filePath, reader, _pushdownFilter, fileDecisions, cancellationToken);
             if (!filePlan.ShouldRead)
             {
                 continue;
@@ -403,6 +424,17 @@ public sealed class ParquetQuery<TSource, TResult>
 
             foreach (var rowGroup in filePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead))
             {
+                PagePruningResult pagePruning;
+                using (var rowGroupReader = reader.OpenRowGroupReader(rowGroup.Index))
+                {
+                    pagePruning = await PagePruner.PruneAsync(rowGroupReader, reader.Schema, _pushdownFilter, cancellationToken);
+                }
+
+                if (pagePruning.CandidateRowCountUpperBound == 0)
+                {
+                    continue;
+                }
+
                 if (materializationPlan.RequiresFullMaterialization)
                 {
                     var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
@@ -411,6 +443,7 @@ public sealed class ParquetQuery<TSource, TResult>
                         rowGroup.Index,
                         materializationPlan,
                         serializerOptions,
+                        pagePruning.Intervals,
                         cancellationToken);
 
                     foreach (var row in batch)
@@ -424,13 +457,14 @@ public sealed class ParquetQuery<TSource, TResult>
                     continue;
                 }
 
-                var rows = await PartialRowMaterializer<TSource>.ReadFilterRowsAsync(
+                var rowSet = await PartialRowMaterializer<TSource>.ReadFilterRowsAsync(
                     reader,
                     rowGroup.Index,
                     materializationPlan,
+                    pagePruning.Intervals,
                     cancellationToken);
 
-                var selectedIndexes = SelectMatchingIndexes(rows, rowFilter);
+                var selectedIndexes = SelectMatchingIndexes(rowSet.Rows, rowFilter);
                 if (selectedIndexes.Count == 0)
                 {
                     continue;
@@ -440,13 +474,13 @@ public sealed class ParquetQuery<TSource, TResult>
                     reader,
                     rowGroup.Index,
                     materializationPlan,
-                    rows,
+                    rowSet,
                     selectedIndexes,
                     cancellationToken);
 
                 foreach (var selectedIndex in selectedIndexes)
                 {
-                    yield return projector(rows[selectedIndex]);
+                    yield return projector(rowSet.Rows[selectedIndex]);
                 }
             }
         }

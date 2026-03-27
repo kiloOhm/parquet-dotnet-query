@@ -1,3 +1,4 @@
+using Parquet;
 using Parquet.Data;
 using Parquet.Meta;
 using Parquet.Query.Internal;
@@ -8,11 +9,12 @@ namespace Parquet.Query.Planning;
 
 internal static class RowGroupPlanner
 {
-    public static QueryFilePlan BuildFilePlan<T>(
+    public static async Task<QueryFilePlan> BuildFilePlanAsync<T>(
         string filePath,
         ParquetReader reader,
         PushdownFilter<T> pushdownFilter,
-        IReadOnlyList<FilePredicateDecision> fileDecisions)
+        IReadOnlyList<FilePredicateDecision> fileDecisions,
+        CancellationToken cancellationToken)
         where T : class, new()
     {
         var dataFields = reader.Schema.GetDataFields()
@@ -25,8 +27,9 @@ internal static class RowGroupPlanner
             using var rowGroupReader = reader.OpenRowGroupReader(rowGroupIndex);
             var decisions = new List<RowGroupPredicateDecision>(pushdownFilter.Predicates.Count);
             var shouldRead = true;
-            var pageIndexAvailable = HasPageIndex(rowGroupReader, dataFields.Values);
+            var pageIndexAvailable = HasPersistedPageIndex(rowGroupReader, dataFields.Values);
             anyPageIndex |= pageIndexAvailable;
+            var pagePruning = PagePruningResult.Full(rowGroupReader.RowCount);
 
             foreach (var predicate in pushdownFilter.Predicates)
             {
@@ -39,7 +42,28 @@ internal static class RowGroupPlanner
                 }
             }
 
-            rowGroups.Add(new RowGroupPlan(filePath, rowGroupIndex, rowGroupReader.RowCount, shouldRead, pageIndexAvailable, decisions));
+            if (shouldRead && !pushdownFilter.IsEmpty)
+            {
+                pagePruning = await PagePruner.PruneAsync(rowGroupReader, reader.Schema, pushdownFilter, cancellationToken);
+                pageIndexAvailable |= pagePruning.PageIndexAvailable;
+                anyPageIndex |= pagePruning.PageIndexAvailable;
+                if (pagePruning.CandidateRowCountUpperBound == 0)
+                {
+                    shouldRead = false;
+                }
+            }
+
+            rowGroups.Add(new RowGroupPlan(
+                filePath,
+                rowGroupIndex,
+                rowGroupReader.RowCount,
+                shouldRead,
+                pageIndexAvailable,
+                decisions,
+                pagePruning.PageCount,
+                pagePruning.SelectedPageCount,
+                shouldRead ? pagePruning.CandidateRowCountUpperBound : 0,
+                pagePruning.UsedFallbackIndex));
         }
 
         var fileShouldRead = fileDecisions.All(decision => decision.MayMatch) && rowGroups.Any(rowGroup => rowGroup.ShouldRead);
@@ -58,7 +82,7 @@ internal static class RowGroupPlanner
             anyPageIndex);
     }
 
-    private static bool HasPageIndex(IParquetRowGroupReader rowGroupReader, IEnumerable<DataField> fields)
+    private static bool HasPersistedPageIndex(IParquetRowGroupReader rowGroupReader, IEnumerable<DataField> fields)
     {
         foreach (var field in fields)
         {

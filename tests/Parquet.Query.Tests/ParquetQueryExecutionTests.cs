@@ -1,4 +1,6 @@
 using System.Text;
+using Parquet;
+using Parquet.Meta;
 using Parquet.Serialization;
 
 namespace Parquet.Query.Tests;
@@ -456,6 +458,167 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PlanAsync_uses_page_indexes_to_prune_single_row_group_pages()
+    {
+        var filePath = Path.Combine(_tempDirectory, "page-pruning.parquet");
+        await WriteRowsAsync(
+            filePath,
+            Enumerable.Range(1, 6)
+                .Select(age => new TestRow { Id = age, Country = "DE", Name = $"row-{age}", Age = age })
+                .ToArray(),
+            configureOptions: options => options.DataPageRowCountLimit = 2,
+            configureSerializerOptions: options => options.RowGroupSize = 6);
+
+        var query = ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Pushdown(filter => filter.Ge(row => row.Age, 5));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        var rowGroup = Assert.Single(plan.RowGroups);
+        Assert.False(plan.RequiresFullMaterialization);
+        Assert.True(plan.PageIndexAvailable);
+        Assert.Equal(3, rowGroup.PageCount);
+        Assert.Equal(1, rowGroup.SelectedPageCount);
+        Assert.Equal(2, rowGroup.CandidateRowCountUpperBound);
+        Assert.Equal(new[] { 5, 6 }, rows.Select(row => row.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task PlanAsync_falls_back_to_scanned_page_indexes_when_footer_indexes_are_missing()
+    {
+        var filePath = Path.Combine(_tempDirectory, "page-pruning-fallback.parquet");
+        await WriteRowsAsync(
+            filePath,
+            Enumerable.Range(1, 6)
+                .Select(age => new TestRow { Id = age, Country = "DE", Name = $"row-{age}", Age = age })
+                .ToArray(),
+            configureOptions: options => options.DataPageRowCountLimit = 2,
+            configureSerializerOptions: options => options.RowGroupSize = 6);
+
+        await RemovePageIndexesFromFooterAsync(filePath);
+
+        var query = ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Pushdown(filter => filter.Ge(row => row.Age, 5));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        var rowGroup = Assert.Single(plan.RowGroups);
+        Assert.True(plan.PageIndexAvailable);
+        Assert.True(rowGroup.UsedFallbackPageIndex);
+        Assert.Equal(3, rowGroup.PageCount);
+        Assert.Equal(1, rowGroup.SelectedPageCount);
+        Assert.Equal(2, rowGroup.CandidateRowCountUpperBound);
+        Assert.Equal(new[] { 5, 6 }, rows.Select(row => row.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task ToListAsync_without_projection_uses_page_pruning_for_simple_rows()
+    {
+        var filePath = Path.Combine(_tempDirectory, "full-row-page-pruning.parquet");
+        await WriteRowsAsync(
+            filePath,
+            Enumerable.Range(1, 6)
+                .Select(age => new TestRow { Id = age, Country = "DE", Name = $"row-{age}", Age = age })
+                .ToArray(),
+            configureOptions: options => options.DataPageRowCountLimit = 2,
+            configureSerializerOptions: options => options.RowGroupSize = 6);
+
+        var query = ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Pushdown(filter => filter.Ge(row => row.Age, 5));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        var rowGroup = Assert.Single(plan.RowGroups);
+        Assert.False(plan.RequiresFullMaterialization);
+        Assert.Equal(3, rowGroup.PageCount);
+        Assert.Equal(1, rowGroup.SelectedPageCount);
+        Assert.Equal(new[] { 5, 6 }, rows.Select(row => row.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task NotEqual_pushdown_keeps_null_only_pages_in_play()
+    {
+        var filePath = Path.Combine(_tempDirectory, "nullable-page-pruning.parquet");
+        await WriteGenericRowsAsync(
+            filePath,
+            new[]
+            {
+                new NullableScoreRow { Id = 1, Score = null },
+                new NullableScoreRow { Id = 2, Score = null },
+                new NullableScoreRow { Id = 3, Score = 5 },
+                new NullableScoreRow { Id = 4, Score = 6 }
+            },
+            configureOptions: options => options.DataPageRowCountLimit = 2,
+            configureSerializerOptions: options => options.RowGroupSize = 4);
+
+        var query = ParquetQuery
+            .FromFile<NullableScoreRow>(filePath)
+            .Pushdown(filter => filter.NotEq(row => row.Score, 5));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        var rowGroup = Assert.Single(plan.RowGroups);
+        Assert.Equal(2, rowGroup.PageCount);
+        Assert.Equal(2, rowGroup.SelectedPageCount);
+        Assert.Equal(new[] { 1, 2, 4 }, rows.Select(row => row.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task Bool_predicates_without_column_index_support_keep_full_page_coverage()
+    {
+        var filePath = Path.Combine(_tempDirectory, "bool-no-column-index.parquet");
+        await WriteGenericRowsAsync(
+            filePath,
+            new[]
+            {
+                new BoolFlagRow { Id = 1, Flag = false },
+                new BoolFlagRow { Id = 2, Flag = false },
+                new BoolFlagRow { Id = 3, Flag = true },
+                new BoolFlagRow { Id = 4, Flag = true }
+            },
+            configureOptions: options => options.DataPageRowCountLimit = 2,
+            configureSerializerOptions: options => options.RowGroupSize = 4);
+
+        var query = ParquetQuery
+            .FromFile<BoolFlagRow>(filePath)
+            .Pushdown(filter => filter.Eq(row => row.Flag, true));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        var rowGroup = Assert.Single(plan.RowGroups);
+        Assert.True(rowGroup.PageIndexAvailable);
+        Assert.Equal(0, rowGroup.SelectedPageCount);
+        Assert.Equal(rowGroup.RowCount, rowGroup.CandidateRowCountUpperBound);
+        Assert.Equal(new[] { 3, 4 }, rows.Select(row => row.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task PlanAsync_falls_back_to_full_materialization_for_recursive_source_shapes()
+    {
+        var filePath = Path.Combine(_tempDirectory, "recursive-shape.parquet");
+        await WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 }
+            });
+
+        var plan = await ParquetQuery
+            .FromFile<RecursiveMaterializationRow>(filePath)
+            .PlanAsync();
+
+        Assert.True(plan.RequiresFullMaterialization);
+    }
+
+    [Fact]
     public async Task WithFooterKey_reads_encrypted_footer_file()
     {
         var filePath = Path.Combine(_tempDirectory, "footer-encrypted.parquet");
@@ -489,7 +652,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     public async Task WithColumnKeyResolver_reads_column_encrypted_file()
     {
         var filePath = Path.Combine(_tempDirectory, "column-encrypted.parquet");
-        var keyMetadata = Encoding.UTF8.GetBytes("name-column-key");
+        var keyMetadata = System.Text.Encoding.UTF8.GetBytes("name-column-key");
         const string footerKey = "FEDCBA9876543210";
         const string columnKey = "0011223344556677";
 
@@ -548,12 +711,12 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
 
         var rows = await ParquetQuery
             .FromFile<TestRow>(filePath)
-            .WithFooterSigningKey("0011223344556677", Encoding.UTF8.GetBytes("footer-signing"))
+            .WithFooterSigningKey("0011223344556677", System.Text.Encoding.UTF8.GetBytes("footer-signing"))
             .UsePlaintextFooter()
             .WithAadPrefix("query-tests", supplyOutOfBand: true)
             .UseCtrVariant()
             .ConfigureParquetOptions(options => options.TreatByteArrayAsString = true)
-            .WithFooterKey("8899AABBCCDDEEFF", Encoding.UTF8.GetBytes("footer-key"))
+            .WithFooterKey("8899AABBCCDDEEFF", System.Text.Encoding.UTF8.GetBytes("footer-key"))
             .ToListAsync();
 
         Assert.Equal(new[] { 1, 2 }, rows.Select(row => row.Id).ToArray());
@@ -632,7 +795,8 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     private static Task WriteRowsAsync(
         string filePath,
         IReadOnlyCollection<TestRow> rows,
-        Action<ParquetOptions>? configureOptions = null)
+        Action<ParquetOptions>? configureOptions = null,
+        Action<ParquetSerializerOptions>? configureSerializerOptions = null)
     {
         var parquetOptions = new ParquetOptions();
         parquetOptions.BloomFilterOptionsByColumn["Name"] = new ParquetOptions.BloomFilterOptions
@@ -641,33 +805,106 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         };
         configureOptions?.Invoke(parquetOptions);
 
+        var serializerOptions = new ParquetSerializerOptions
+        {
+            RowGroupSize = 2,
+            ParquetOptions = parquetOptions
+        };
+        configureSerializerOptions?.Invoke(serializerOptions);
+
         return ParquetSerializer.SerializeAsync(
             rows,
             filePath,
-            new ParquetSerializerOptions
-            {
-                RowGroupSize = 2,
-                ParquetOptions = parquetOptions
-            });
+            serializerOptions);
+    }
+
+    private static Task WriteGenericRowsAsync<TRow>(
+        string filePath,
+        IReadOnlyCollection<TRow> rows,
+        Action<ParquetOptions>? configureOptions = null,
+        Action<ParquetSerializerOptions>? configureSerializerOptions = null)
+        where TRow : class, new()
+    {
+        var parquetOptions = new ParquetOptions();
+        configureOptions?.Invoke(parquetOptions);
+
+        var serializerOptions = new ParquetSerializerOptions
+        {
+            RowGroupSize = 2,
+            ParquetOptions = parquetOptions
+        };
+        configureSerializerOptions?.Invoke(serializerOptions);
+
+        return ParquetSerializer.SerializeAsync(
+            rows,
+            filePath,
+            serializerOptions);
     }
 
     private static Task WriteNestedRowsAsync(
         string filePath,
         IReadOnlyCollection<NestedTestRow> rows,
-        Action<ParquetOptions>? configureOptions = null)
+        Action<ParquetOptions>? configureOptions = null,
+        Action<ParquetSerializerOptions>? configureSerializerOptions = null)
     {
         var parquetOptions = new ParquetOptions();
         configureOptions?.Invoke(parquetOptions);
 
+        var serializerOptions = new ParquetSerializerOptions
+        {
+            RowGroupSize = 2,
+            ParquetOptions = parquetOptions
+        };
+        configureSerializerOptions?.Invoke(serializerOptions);
+
         return ParquetSerializer.SerializeAsync(
             rows,
             filePath,
-            new ParquetSerializerOptions
-            {
-                RowGroupSize = 2,
-                ParquetOptions = parquetOptions
-            });
+            serializerOptions);
     }
 
     private static T Identity<T>(T value) => value;
+
+    private static async Task RemovePageIndexesFromFooterAsync(string filePath)
+    {
+        var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
+
+        using var input = new MemoryStream(fileBytes, writable: false);
+        using var reader = await ParquetReader.CreateAsync(input);
+
+        FileMetaData metadata = reader.Metadata!;
+        foreach (var rowGroup in metadata.RowGroups)
+        {
+            foreach (var columnChunk in rowGroup.Columns)
+            {
+                columnChunk.OffsetIndexOffset = null;
+                columnChunk.OffsetIndexLength = null;
+                columnChunk.ColumnIndexOffset = null;
+                columnChunk.ColumnIndexLength = null;
+            }
+        }
+
+        var originalFooterLength = BitConverter.ToInt32(fileBytes, fileBytes.Length - 8);
+        var footerStart = fileBytes.Length - 8 - originalFooterLength;
+
+        using var output = new MemoryStream();
+        await output.WriteAsync(fileBytes.AsMemory(0, footerStart));
+
+        var footerType = typeof(ParquetReader).Assembly.GetType("Parquet.File.ThriftFooter", throwOnError: true)
+            ?? throw new InvalidOperationException("Parquet.File.ThriftFooter could not be loaded.");
+        var footer = Activator.CreateInstance(footerType, metadata)
+            ?? throw new InvalidOperationException("Parquet.File.ThriftFooter could not be created.");
+        var writeMethod = footerType.GetMethod(
+            "Write",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic,
+            binder: null,
+            types: new[] { typeof(Stream) },
+            modifiers: null)
+            ?? throw new InvalidOperationException("Parquet.File.ThriftFooter.Write(Stream) could not be found.");
+        var newFooterLength = checked(Convert.ToInt32(writeMethod.Invoke(footer, new object[] { output })));
+        await output.WriteAsync(BitConverter.GetBytes(newFooterLength));
+        await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PAR1"));
+
+        await System.IO.File.WriteAllBytesAsync(filePath, output.ToArray());
+    }
 }

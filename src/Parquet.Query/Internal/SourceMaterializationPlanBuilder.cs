@@ -17,15 +17,30 @@ internal static class SourceMaterializationPlanBuilder
     {
         ArgumentNullException.ThrowIfNull(schema);
 
+        HashSet<string> resultMemberPaths;
         if (projection is null)
         {
-            return SourceMaterializationPlan<TSource>.Full;
+            if (!TryGetDefaultResultMemberPaths(typeof(TSource), out resultMemberPaths))
+            {
+                return SourceMaterializationPlan<TSource>.Full;
+            }
         }
-
-        var projectionAnalysis = SourceAccessAnalyzer.Analyze(projection);
-        if (projectionAnalysis.RequiresFullMaterialization)
+        else
         {
-            return SourceMaterializationPlan<TSource>.Full;
+            var projectionAnalysis = SourceAccessAnalyzer.Analyze(projection);
+            if (projectionAnalysis.RequiresFullMaterialization)
+            {
+                return SourceMaterializationPlan<TSource>.Full;
+            }
+
+            resultMemberPaths = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var memberPath in projectionAnalysis.MemberPaths)
+            {
+                foreach (var expandedPath in ExpandProjectionPath(typeof(TSource), memberPath))
+                {
+                    resultMemberPaths.Add(expandedPath);
+                }
+            }
         }
 
         var filterMemberPaths = new HashSet<string>(
@@ -48,15 +63,6 @@ internal static class SourceMaterializationPlanBuilder
                 }
 
                 filterMemberPaths.Add(memberPath);
-            }
-        }
-
-        var resultMemberPaths = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var memberPath in projectionAnalysis.MemberPaths)
-        {
-            foreach (var expandedPath in ExpandProjectionPath(typeof(TSource), memberPath))
-            {
-                resultMemberPaths.Add(expandedPath);
             }
         }
 
@@ -87,6 +93,57 @@ internal static class SourceMaterializationPlanBuilder
             new ReadOnlyCollection<string>(resultBindings.Select(binding => binding.ColumnPath).Distinct(StringComparer.Ordinal).OrderBy(path => path, StringComparer.Ordinal).ToArray()),
             new ReadOnlyCollection<string>(deferredBindings.Select(binding => binding.ColumnPath).Distinct(StringComparer.Ordinal).OrderBy(path => path, StringComparer.Ordinal).ToArray()),
             new ReadOnlyCollection<string>(requiredColumnPaths));
+    }
+
+    private static bool TryGetDefaultResultMemberPaths(Type rootType, out HashSet<string> memberPaths)
+    {
+        memberPaths = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var member in GetReadableMembers(rootType))
+        {
+            if (!TryExpandReadablePath(GetMemberType(member), member.Name, memberPaths, new HashSet<Type> { rootType }))
+            {
+                memberPaths.Clear();
+                return false;
+            }
+        }
+
+        return memberPaths.Count > 0;
+    }
+
+    private static bool TryExpandReadablePath(
+        Type memberType,
+        string memberPath,
+        HashSet<string> output,
+        HashSet<Type> ancestry)
+    {
+        if (IsScalarLike(memberType))
+        {
+            output.Add(memberPath);
+            return true;
+        }
+
+        if (!CanTraverseComplexType(memberType))
+        {
+            return false;
+        }
+
+        var underlyingType = Nullable.GetUnderlyingType(memberType) ?? memberType;
+        if (!ancestry.Add(underlyingType))
+        {
+            return false;
+        }
+
+        foreach (var childMember in GetReadableMembers(underlyingType))
+        {
+            if (!TryExpandReadablePath(GetMemberType(childMember), $"{memberPath}.{childMember.Name}", output, ancestry))
+            {
+                ancestry.Remove(underlyingType);
+                return false;
+            }
+        }
+
+        ancestry.Remove(underlyingType);
+        return true;
     }
 
     private static SourceColumnBinding<TSource>[]? CreateBindings<TSource>(IEnumerable<string> memberPaths)

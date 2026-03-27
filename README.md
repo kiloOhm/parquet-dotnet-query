@@ -10,13 +10,14 @@ It keeps Parquet-specific optimizations explicit:
 - `FromFiles(...)` and `FromDirectory(...)` for dataset-style scans
 - `PlanAsync()` and `ExplainAsync()` for visibility into what was pushed down
 
-The current implementation focuses on file pruning, row-group pruning, and selective materialization rather than pretending to be a full LINQ provider.
+The current implementation focuses on file pruning, row-group pruning, page pruning, and selective materialization rather than pretending to be a full LINQ provider.
 
 ## Features
 
 - Explicit pushdown filter DSL
 - Partial extraction from `Where(...)` expressions
 - Statistics-based row-group pruning
+- Page-index-based page pruning within surviving row groups
 - Partition-aware file pruning for directory layouts like `Country=DE/...`
 - Bloom-filter-aware equality pruning when bloom filters are present
 - Late materialization for projected queries
@@ -94,8 +95,9 @@ You will see:
 - extracted pushdown predicates
 - residual predicates
 - selected row groups
+- selected pages and candidate-row upper bounds when page pruning applies
 - filter columns versus deferred columns
-- whether pruning was based on partitions, statistics, bloom filters, or schema fallback
+- whether pruning was based on partitions, statistics, bloom filters, persisted page indexes, or fallback page-index scans
 
 If you want unsupported residual logic to fail fast instead of silently falling back, use:
 
@@ -142,7 +144,8 @@ var rows = await ParquetQuery
 
 - Partial materialization is aimed at nested class graphs with scalar leaves
 - More complex shapes fall back to full source materialization
-- Page-index metadata can be detected, but page-level pruning is not yet wired through the public `kiloOhm.Parquet.Net` reader API
+- Page pruning depends on the public page reader/index APIs in `kiloOhm.Parquet.Net`
+- When persisted page indexes are absent, the query layer can fall back to computed in-memory column indexes for supported types
 - This is not a general-purpose `IQueryable` provider
 
 That tradeoff is deliberate: the API stays storage-aware and keeps correctness simple.

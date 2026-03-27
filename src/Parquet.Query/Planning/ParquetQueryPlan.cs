@@ -46,7 +46,7 @@ public sealed class ParquetQueryPlan
 
     public int SelectedRowGroupCount => RowGroups.Count(rowGroup => rowGroup.ShouldRead);
 
-    public long SelectedRowCountUpperBound => RowGroups.Where(rowGroup => rowGroup.ShouldRead).Sum(rowGroup => rowGroup.RowCount);
+    public long SelectedRowCountUpperBound => RowGroups.Where(rowGroup => rowGroup.ShouldRead).Sum(rowGroup => rowGroup.CandidateRowCountUpperBound);
 }
 
 public sealed class QueryFilePlan
@@ -109,7 +109,11 @@ public sealed class RowGroupPlan
         long rowCount,
         bool shouldRead,
         bool pageIndexAvailable,
-        IReadOnlyList<RowGroupPredicateDecision> decisions)
+        IReadOnlyList<RowGroupPredicateDecision> decisions,
+        int pageCount,
+        int selectedPageCount,
+        long candidateRowCountUpperBound,
+        bool usedFallbackPageIndex)
     {
         FilePath = filePath;
         Index = index;
@@ -117,6 +121,10 @@ public sealed class RowGroupPlan
         ShouldRead = shouldRead;
         PageIndexAvailable = pageIndexAvailable;
         Decisions = decisions;
+        PageCount = pageCount;
+        SelectedPageCount = selectedPageCount;
+        CandidateRowCountUpperBound = candidateRowCountUpperBound;
+        UsedFallbackPageIndex = usedFallbackPageIndex;
     }
 
     public string FilePath { get; }
@@ -130,6 +138,14 @@ public sealed class RowGroupPlan
     public bool PageIndexAvailable { get; }
 
     public IReadOnlyList<RowGroupPredicateDecision> Decisions { get; }
+
+    public int PageCount { get; }
+
+    public int SelectedPageCount { get; }
+
+    public long CandidateRowCountUpperBound { get; }
+
+    public bool UsedFallbackPageIndex { get; }
 }
 
 public sealed class RowGroupPredicateDecision
