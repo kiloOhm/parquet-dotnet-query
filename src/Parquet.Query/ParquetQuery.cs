@@ -325,45 +325,10 @@ public sealed class ParquetQuery<TSource, TResult>
                 .Sum(file => file.FilePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead).Sum(rowGroup => rowGroup.RowCount));
         }
 
-        var rowFilter = BuildRowFilter();
         long count = 0;
-
-        await foreach (var openFile in OpenExecutionFilesAsync(countOnly: true, cancellationToken))
+        await foreach (var matchCount in EnumerateMatchCountsAsync(cancellationToken))
         {
-            var file = openFile.ExecutionFilePlan;
-            var reader = openFile.Reader;
-            var materializationPlan = file.MaterializationPlan!;
-            var serializerOptions = openFile.SerializerOptions;
-
-            foreach (var rowGroup in file.FilePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead))
-            {
-                if (rowGroup.CandidateRowCountUpperBound == 0)
-                {
-                    continue;
-                }
-
-                if (materializationPlan.RequiresFullMaterialization)
-                {
-                    var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
-                        reader,
-                        rowGroup.Index,
-                        materializationPlan,
-                        serializerOptions,
-                        rowGroup.CandidateIntervals,
-                        cancellationToken);
-
-                    count += CountMatchingRows(batch, rowFilter);
-                    continue;
-                }
-
-                var rowSet = await PartialRowMaterializer<TSource>.ReadFilterRowsAsync(
-                    reader,
-                    rowGroup.Index,
-                    materializationPlan,
-                    rowGroup.CandidateIntervals,
-                    cancellationToken);
-                count += CountMatchingRows(rowSet.Rows, rowFilter);
-            }
+            count += matchCount;
         }
 
         return count;
@@ -382,6 +347,48 @@ public sealed class ParquetQuery<TSource, TResult>
                 file.FilePlan.RowGroups.Any(rowGroup => rowGroup.ShouldRead && rowGroup.RowCount > 0));
         }
 
+        await foreach (var matchCount in EnumerateMatchCountsAsync(cancellationToken))
+        {
+            if (matchCount > 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public async Task<TResult?> FirstOrDefaultAsync(CancellationToken cancellationToken = default)
+    {
+        await foreach (var result in EnumerateResultsAsync(cancellationToken))
+        {
+            return result;
+        }
+
+        return default;
+    }
+
+    public async Task<IReadOnlyList<TResult>> ToListAsync(CancellationToken cancellationToken = default)
+    {
+        var results = new List<TResult>();
+        await foreach (var result in EnumerateResultsAsync(cancellationToken))
+        {
+            results.Add(result);
+        }
+
+        return results;
+    }
+
+    public async IAsyncEnumerable<TResult> ToAsyncEnumerable([EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (var result in EnumerateResultsAsync(cancellationToken))
+        {
+            yield return result;
+        }
+    }
+
+    private async IAsyncEnumerable<int> EnumerateMatchCountsAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
         var rowFilter = BuildRowFilter();
 
         await foreach (var openFile in OpenExecutionFilesAsync(countOnly: true, cancellationToken))
@@ -402,12 +409,7 @@ public sealed class ParquetQuery<TSource, TResult>
                         serializerOptions,
                         rowGroup.CandidateIntervals,
                         cancellationToken);
-
-                    if (batch.Any(rowFilter))
-                    {
-                        return true;
-                    }
-
+                    yield return CountMatchingRows(batch, rowFilter);
                     continue;
                 }
 
@@ -417,260 +419,12 @@ public sealed class ParquetQuery<TSource, TResult>
                     materializationPlan,
                     rowGroup.CandidateIntervals,
                     cancellationToken);
-
-                if (rowSet.Rows.Any(rowFilter))
-                {
-                    return true;
-                }
+                yield return CountMatchingRows(rowSet.Rows, rowFilter);
             }
         }
-
-        return false;
     }
 
-    public async Task<TResult?> FirstOrDefaultAsync(CancellationToken cancellationToken = default)
-    {
-        var rowFilter = BuildRowFilter();
-        var isRowFilterTrivial = _pushdownFilter.IsEmpty && _wherePredicates.Count == 0;
-
-        await foreach (var openFile in OpenExecutionFilesAsync(countOnly: false, cancellationToken))
-        {
-            var file = openFile.ExecutionFilePlan;
-            var reader = openFile.Reader;
-            var materializationPlan = file.MaterializationPlan!;
-            var projectionPlan = ProjectionPlan<TSource, TResult>.Create(_projection, materializationPlan);
-            var serializerOptions = openFile.SerializerOptions;
-
-            foreach (var rowGroup in file.FilePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead && rowGroup.CandidateRowCountUpperBound > 0))
-            {
-                if (!materializationPlan.RequiresFullMaterialization &&
-                    projectionPlan.IsDirectScalar &&
-                    isRowFilterTrivial)
-                {
-                    var projectedValues = await ReadProjectedValuesAsync(
-                        reader,
-                        rowGroup.Index,
-                        rowGroup.RowCount,
-                        serializerOptions,
-                        projectionPlan,
-                        rowGroup.CandidateIntervals,
-                        cancellationToken);
-                    if (projectedValues.Count > 0)
-                    {
-                        return projectedValues[0];
-                    }
-
-                    continue;
-                }
-
-                if (materializationPlan.RequiresFullMaterialization)
-                {
-                    var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
-                        reader,
-                        rowGroup.Index,
-                        materializationPlan,
-                        serializerOptions,
-                        rowGroup.CandidateIntervals,
-                        cancellationToken);
-
-                    foreach (var row in batch)
-                    {
-                        if (rowFilter(row))
-                        {
-                            return projectionPlan.ProjectRow(row);
-                        }
-                    }
-
-                    continue;
-                }
-
-                var rowSet = await PartialRowMaterializer<TSource>.ReadFilterRowsAsync(
-                    reader,
-                    rowGroup.Index,
-                    materializationPlan,
-                    rowGroup.CandidateIntervals,
-                    cancellationToken);
-
-                var selectedIndexes = SelectMatchingIndexes(rowSet.Rows, rowFilter);
-                if (selectedIndexes.Count == 0)
-                {
-                    continue;
-                }
-
-                if (projectionPlan.IsDirectScalar)
-                {
-                    return (await ProjectDirectScalarResultsAsync(
-                        reader,
-                        rowGroup.Index,
-                        serializerOptions,
-                        materializationPlan,
-                        projectionPlan,
-                        rowSet,
-                        selectedIndexes,
-                        cancellationToken))[0];
-                }
-
-                if (projectionPlan.IsVectorized)
-                {
-                    return (await ProjectVectorizedResultsAsync(
-                        reader,
-                        rowGroup.Index,
-                        serializerOptions,
-                        materializationPlan,
-                        projectionPlan,
-                        rowSet,
-                        selectedIndexes,
-                        cancellationToken))[0];
-                }
-
-                if (materializationPlan.DeferredBindings.Any(binding => binding.RequiresFullRowRead))
-                {
-                    return (await ProjectFromFullRowsAsync(
-                        rowGroup.Index,
-                        reader,
-                        serializerOptions,
-                        projectionPlan,
-                        materializationPlan,
-                        rowSet,
-                        selectedIndexes,
-                        cancellationToken))[0];
-                }
-
-                await PartialRowMaterializer<TSource>.PopulateDeferredColumnsAsync(
-                    reader,
-                    rowGroup.Index,
-                    materializationPlan,
-                    rowSet,
-                    selectedIndexes,
-                    cancellationToken);
-
-                return projectionPlan.ProjectRow(rowSet.Rows[selectedIndexes[0]]);
-            }
-        }
-
-        return default;
-    }
-
-    public async Task<IReadOnlyList<TResult>> ToListAsync(CancellationToken cancellationToken = default)
-    {
-        var rowFilter = BuildRowFilter();
-        var results = new List<TResult>();
-        var isRowFilterTrivial = _pushdownFilter.IsEmpty && _wherePredicates.Count == 0;
-
-        await foreach (var openFile in OpenExecutionFilesAsync(countOnly: false, cancellationToken))
-        {
-            var file = openFile.ExecutionFilePlan;
-            var reader = openFile.Reader;
-            var materializationPlan = file.MaterializationPlan!;
-            var projectionPlan = ProjectionPlan<TSource, TResult>.Create(_projection, materializationPlan);
-            var serializerOptions = openFile.SerializerOptions;
-
-            foreach (var rowGroup in file.FilePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead))
-            {
-                if (rowGroup.CandidateRowCountUpperBound == 0)
-                {
-                    continue;
-                }
-
-                if (!materializationPlan.RequiresFullMaterialization &&
-                    projectionPlan.IsDirectScalar &&
-                    isRowFilterTrivial)
-                {
-                    var projectedValues = await ReadProjectedValuesAsync(
-                        reader,
-                        rowGroup.Index,
-                        rowGroup.RowCount,
-                        serializerOptions,
-                        projectionPlan,
-                        rowGroup.CandidateIntervals,
-                        cancellationToken);
-                    results.AddRange(projectedValues);
-                    continue;
-                }
-
-                if (materializationPlan.RequiresFullMaterialization)
-                {
-                    var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
-                        reader,
-                        rowGroup.Index,
-                        materializationPlan,
-                        serializerOptions,
-                        rowGroup.CandidateIntervals,
-                        cancellationToken);
-
-                    foreach (var row in batch)
-                    {
-                        if (rowFilter(row))
-                        {
-                            results.Add(projectionPlan.ProjectRow(row));
-                        }
-                    }
-
-                    continue;
-                }
-
-                var rowSet = await PartialRowMaterializer<TSource>.ReadFilterRowsAsync(
-                    reader,
-                    rowGroup.Index,
-                    materializationPlan,
-                    rowGroup.CandidateIntervals,
-                    cancellationToken);
-
-                var selectedIndexes = SelectMatchingIndexes(rowSet.Rows, rowFilter);
-                if (selectedIndexes.Count == 0)
-                {
-                    continue;
-                }
-
-                if (projectionPlan.IsDirectScalar)
-                {
-                    foreach (var result in await ProjectDirectScalarResultsAsync(reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
-                    {
-                        results.Add(result);
-                    }
-
-                    continue;
-                }
-
-                if (projectionPlan.IsVectorized)
-                {
-                    foreach (var result in await ProjectVectorizedResultsAsync(reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
-                    {
-                        results.Add(result);
-                    }
-
-                    continue;
-                }
-
-                if (materializationPlan.DeferredBindings.Any(binding => binding.RequiresFullRowRead))
-                {
-                    foreach (var result in await ProjectFromFullRowsAsync(rowGroup.Index, reader, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken))
-                    {
-                        results.Add(result);
-                    }
-
-                    continue;
-                }
-
-                await PartialRowMaterializer<TSource>.PopulateDeferredColumnsAsync(
-                    reader,
-                    rowGroup.Index,
-                    materializationPlan,
-                    rowSet,
-                    selectedIndexes,
-                    cancellationToken);
-
-                foreach (var selectedIndex in selectedIndexes)
-                {
-                    results.Add(projectionPlan.ProjectRow(rowSet.Rows[selectedIndex]));
-                }
-            }
-        }
-
-        return results;
-    }
-
-    public async IAsyncEnumerable<TResult> ToAsyncEnumerable([EnumeratorCancellation] CancellationToken cancellationToken = default)
+    private async IAsyncEnumerable<TResult> EnumerateResultsAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var rowFilter = BuildRowFilter();
         var isRowFilterTrivial = _pushdownFilter.IsEmpty && _wherePredicates.Count == 0;
