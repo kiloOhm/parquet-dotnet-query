@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Parquet.Query/Parquet.Query.csproj" />
+    <Project Path="src/Parquet.Query.Extensions.Writing/Parquet.Query.Extensions.Writing.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Parquet.Query.Tests/Parquet.Query.Tests.csproj" />

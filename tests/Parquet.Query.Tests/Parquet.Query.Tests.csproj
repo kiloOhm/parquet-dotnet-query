@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Parquet.Query\Parquet.Query.csproj" />
+    <ProjectReference Include="..\..\src\Parquet.Query.Extensions.Writing\Parquet.Query.Extensions.Writing.csproj" />
   </ItemGroup>
 
 </Project>
