@@ -10,7 +10,6 @@ internal static class PartialRowMaterializer<TSource>
     where TSource : class, new()
 {
     public static async Task<IReadOnlyList<TSource>> ReadRowGroupAsync(
-        string filePath,
         ParquetReader reader,
         int rowGroupIndex,
         SourceMaterializationPlan<TSource> plan,
@@ -20,14 +19,12 @@ internal static class PartialRowMaterializer<TSource>
     {
         if (plan.RequiresFullMaterialization)
         {
-            var deserializedRows = await ParquetSerializer.DeserializeAsync<TSource>(filePath, rowGroupIndex, serializerOptions, cancellationToken);
-            return deserializedRows.ToArray();
+            return await DeserializeRowGroupAsync(reader, rowGroupIndex, serializerOptions, cancellationToken);
         }
 
         if (plan.DeferredBindings.Any(binding => binding.RequiresFullRowRead))
         {
-            var deserializedRows = await ParquetSerializer.DeserializeAsync<TSource>(filePath, rowGroupIndex, serializerOptions, cancellationToken);
-            return deserializedRows.ToArray();
+            return await DeserializeRowGroupAsync(reader, rowGroupIndex, serializerOptions, cancellationToken);
         }
 
         var rowSet = await ReadFilterRowsAsync(reader, rowGroupIndex, plan, candidateIntervals, cancellationToken);
@@ -38,6 +35,23 @@ internal static class PartialRowMaterializer<TSource>
         }
 
         return rowSet.Rows;
+    }
+
+    private static async Task<IReadOnlyList<TSource>> DeserializeRowGroupAsync(
+        ParquetReader reader,
+        int rowGroupIndex,
+        ParquetSerializerOptions? serializerOptions,
+        CancellationToken cancellationToken)
+    {
+        var rows = new List<TSource>();
+        await ParquetSerializer.DeserializeAsync(
+            reader,
+            rowGroupIndex,
+            rows,
+            cancellationToken,
+            resultsAlreadyAllocated: false,
+            options: serializerOptions);
+        return rows.ToArray();
     }
 
     public static async Task<MaterializedRowSet<TSource>> ReadFilterRowsAsync(

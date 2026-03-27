@@ -1,6 +1,8 @@
 using System.Linq.Expressions;
+using Parquet;
 using Parquet.Query.Planning;
 using Parquet.Query.Pushdown;
+using Parquet.Serialization;
 
 namespace Parquet.Query.Internal;
 
@@ -38,6 +40,26 @@ internal sealed class QueryExecutionFilePlan<TSource>
     public QueryFilePlan FilePlan { get; }
 
     public SourceMaterializationPlan<TSource>? MaterializationPlan { get; }
+}
+
+internal sealed class OpenQueryExecutionFile<TSource>
+    where TSource : class, new()
+{
+    public OpenQueryExecutionFile(
+        QueryExecutionFilePlan<TSource> executionFilePlan,
+        ParquetReader reader,
+        ParquetSerializerOptions? serializerOptions)
+    {
+        ExecutionFilePlan = executionFilePlan;
+        Reader = reader;
+        SerializerOptions = serializerOptions;
+    }
+
+    public QueryExecutionFilePlan<TSource> ExecutionFilePlan { get; }
+
+    public ParquetReader Reader { get; }
+
+    public ParquetSerializerOptions? SerializerOptions { get; }
 }
 
 internal sealed class ProjectionPlan<TSource, TResult>

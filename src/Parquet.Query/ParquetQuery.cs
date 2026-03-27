@@ -313,9 +313,9 @@ public sealed class ParquetQuery<TSource, TResult>
 
     public async Task<long> CountAsync(CancellationToken cancellationToken = default)
     {
-        var executionPlan = await BuildExecutionPlanAsync(cancellationToken, countOnly: true);
         if (_pushdownFilter.IsEmpty && _wherePredicates.Count == 0)
         {
+            var executionPlan = await BuildExecutionPlanAsync(cancellationToken, countOnly: true);
             return executionPlan.Files
                 .Where(file => file.FilePlan.ShouldRead)
                 .Sum(file => file.FilePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead).Sum(rowGroup => rowGroup.RowCount));
@@ -324,17 +324,12 @@ public sealed class ParquetQuery<TSource, TResult>
         var rowFilter = BuildRowFilter();
         long count = 0;
 
-        foreach (var file in executionPlan.Files)
+        await foreach (var openFile in OpenExecutionFilesAsync(countOnly: true, cancellationToken))
         {
-            if (!file.FilePlan.ShouldRead || file.MaterializationPlan is null)
-            {
-                continue;
-            }
-
-            await using var stream = System.IO.File.OpenRead(file.FilePath);
-            using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
-            var materializationPlan = file.MaterializationPlan;
-            var serializerOptions = CreateSerializerOptions();
+            var file = openFile.ExecutionFilePlan;
+            var reader = openFile.Reader;
+            var materializationPlan = file.MaterializationPlan!;
+            var serializerOptions = openFile.SerializerOptions;
 
             foreach (var rowGroup in file.FilePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead))
             {
@@ -346,7 +341,6 @@ public sealed class ParquetQuery<TSource, TResult>
                 if (materializationPlan.RequiresFullMaterialization)
                 {
                     var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
-                        file.FilePath,
                         reader,
                         rowGroup.Index,
                         materializationPlan,
@@ -376,9 +370,9 @@ public sealed class ParquetQuery<TSource, TResult>
 
     public async Task<bool> AnyAsync(CancellationToken cancellationToken = default)
     {
-        var executionPlan = await BuildExecutionPlanAsync(cancellationToken, countOnly: true);
         if (_pushdownFilter.IsEmpty && _wherePredicates.Count == 0)
         {
+            var executionPlan = await BuildExecutionPlanAsync(cancellationToken, countOnly: true);
             return executionPlan.Files.Any(file =>
                 file.FilePlan.ShouldRead &&
                 file.FilePlan.RowGroups.Any(rowGroup => rowGroup.ShouldRead && rowGroup.RowCount > 0));
@@ -386,24 +380,18 @@ public sealed class ParquetQuery<TSource, TResult>
 
         var rowFilter = BuildRowFilter();
 
-        foreach (var file in executionPlan.Files)
+        await foreach (var openFile in OpenExecutionFilesAsync(countOnly: true, cancellationToken))
         {
-            if (!file.FilePlan.ShouldRead || file.MaterializationPlan is null)
-            {
-                continue;
-            }
-
-            await using var stream = System.IO.File.OpenRead(file.FilePath);
-            using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
-            var materializationPlan = file.MaterializationPlan;
-            var serializerOptions = CreateSerializerOptions();
+            var file = openFile.ExecutionFilePlan;
+            var reader = openFile.Reader;
+            var materializationPlan = file.MaterializationPlan!;
+            var serializerOptions = openFile.SerializerOptions;
 
             foreach (var rowGroup in file.FilePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead && rowGroup.CandidateRowCountUpperBound > 0))
             {
                 if (materializationPlan.RequiresFullMaterialization)
                 {
                     var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
-                        file.FilePath,
                         reader,
                         rowGroup.Index,
                         materializationPlan,
@@ -438,22 +426,16 @@ public sealed class ParquetQuery<TSource, TResult>
 
     public async Task<TResult?> FirstOrDefaultAsync(CancellationToken cancellationToken = default)
     {
-        var executionPlan = await BuildExecutionPlanAsync(cancellationToken);
         var rowFilter = BuildRowFilter();
         var isRowFilterTrivial = _pushdownFilter.IsEmpty && _wherePredicates.Count == 0;
 
-        foreach (var file in executionPlan.Files)
+        await foreach (var openFile in OpenExecutionFilesAsync(countOnly: false, cancellationToken))
         {
-            if (!file.FilePlan.ShouldRead || file.MaterializationPlan is null)
-            {
-                continue;
-            }
-
-            await using var stream = System.IO.File.OpenRead(file.FilePath);
-            using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
-            var materializationPlan = file.MaterializationPlan;
+            var file = openFile.ExecutionFilePlan;
+            var reader = openFile.Reader;
+            var materializationPlan = file.MaterializationPlan!;
             var projectionPlan = ProjectionPlan<TSource, TResult>.Create(_projection, materializationPlan);
-            var serializerOptions = CreateSerializerOptions();
+            var serializerOptions = openFile.SerializerOptions;
 
             foreach (var rowGroup in file.FilePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead && rowGroup.CandidateRowCountUpperBound > 0))
             {
@@ -462,7 +444,6 @@ public sealed class ParquetQuery<TSource, TResult>
                     isRowFilterTrivial)
                 {
                     var projectedValues = await ReadProjectedValuesAsync(
-                        file.FilePath,
                         reader,
                         rowGroup.Index,
                         rowGroup.RowCount,
@@ -481,7 +462,6 @@ public sealed class ParquetQuery<TSource, TResult>
                 if (materializationPlan.RequiresFullMaterialization)
                 {
                     var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
-                        file.FilePath,
                         reader,
                         rowGroup.Index,
                         materializationPlan,
@@ -516,7 +496,6 @@ public sealed class ParquetQuery<TSource, TResult>
                 if (projectionPlan.IsDirectScalar)
                 {
                     return (await ProjectDirectScalarResultsAsync(
-                        file.FilePath,
                         reader,
                         rowGroup.Index,
                         serializerOptions,
@@ -530,7 +509,6 @@ public sealed class ParquetQuery<TSource, TResult>
                 if (projectionPlan.IsVectorized)
                 {
                     return (await ProjectVectorizedResultsAsync(
-                        file.FilePath,
                         reader,
                         rowGroup.Index,
                         serializerOptions,
@@ -544,8 +522,8 @@ public sealed class ParquetQuery<TSource, TResult>
                 if (materializationPlan.DeferredBindings.Any(binding => binding.RequiresFullRowRead))
                 {
                     return (await ProjectFromFullRowsAsync(
-                        file.FilePath,
                         rowGroup.Index,
+                        reader,
                         serializerOptions,
                         projectionPlan,
                         materializationPlan,
@@ -571,23 +549,17 @@ public sealed class ParquetQuery<TSource, TResult>
 
     public async Task<IReadOnlyList<TResult>> ToListAsync(CancellationToken cancellationToken = default)
     {
-        var executionPlan = await BuildExecutionPlanAsync(cancellationToken);
         var rowFilter = BuildRowFilter();
         var results = new List<TResult>();
         var isRowFilterTrivial = _pushdownFilter.IsEmpty && _wherePredicates.Count == 0;
 
-        foreach (var file in executionPlan.Files)
+        await foreach (var openFile in OpenExecutionFilesAsync(countOnly: false, cancellationToken))
         {
-            if (!file.FilePlan.ShouldRead || file.MaterializationPlan is null)
-            {
-                continue;
-            }
-
-            await using var stream = System.IO.File.OpenRead(file.FilePath);
-            using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
-            var materializationPlan = file.MaterializationPlan;
+            var file = openFile.ExecutionFilePlan;
+            var reader = openFile.Reader;
+            var materializationPlan = file.MaterializationPlan!;
             var projectionPlan = ProjectionPlan<TSource, TResult>.Create(_projection, materializationPlan);
-            var serializerOptions = CreateSerializerOptions();
+            var serializerOptions = openFile.SerializerOptions;
 
             foreach (var rowGroup in file.FilePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead))
             {
@@ -601,7 +573,6 @@ public sealed class ParquetQuery<TSource, TResult>
                     isRowFilterTrivial)
                 {
                     var projectedValues = await ReadProjectedValuesAsync(
-                        file.FilePath,
                         reader,
                         rowGroup.Index,
                         rowGroup.RowCount,
@@ -616,7 +587,6 @@ public sealed class ParquetQuery<TSource, TResult>
                 if (materializationPlan.RequiresFullMaterialization)
                 {
                     var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
-                        file.FilePath,
                         reader,
                         rowGroup.Index,
                         materializationPlan,
@@ -650,7 +620,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
                 if (projectionPlan.IsDirectScalar)
                 {
-                    foreach (var result in await ProjectDirectScalarResultsAsync(file.FilePath, reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
+                    foreach (var result in await ProjectDirectScalarResultsAsync(reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
                     {
                         results.Add(result);
                     }
@@ -660,7 +630,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
                 if (projectionPlan.IsVectorized)
                 {
-                    foreach (var result in await ProjectVectorizedResultsAsync(file.FilePath, reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
+                    foreach (var result in await ProjectVectorizedResultsAsync(reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
                     {
                         results.Add(result);
                     }
@@ -670,7 +640,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
                 if (materializationPlan.DeferredBindings.Any(binding => binding.RequiresFullRowRead))
                 {
-                    foreach (var result in await ProjectFromFullRowsAsync(file.FilePath, rowGroup.Index, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken))
+                    foreach (var result in await ProjectFromFullRowsAsync(rowGroup.Index, reader, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken))
                     {
                         results.Add(result);
                     }
@@ -698,22 +668,16 @@ public sealed class ParquetQuery<TSource, TResult>
 
     public async IAsyncEnumerable<TResult> ToAsyncEnumerable([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var executionPlan = await BuildExecutionPlanAsync(cancellationToken);
         var rowFilter = BuildRowFilter();
         var isRowFilterTrivial = _pushdownFilter.IsEmpty && _wherePredicates.Count == 0;
 
-        foreach (var file in executionPlan.Files)
+        await foreach (var openFile in OpenExecutionFilesAsync(countOnly: false, cancellationToken))
         {
-            if (!file.FilePlan.ShouldRead || file.MaterializationPlan is null)
-            {
-                continue;
-            }
-
-            await using var stream = System.IO.File.OpenRead(file.FilePath);
-            using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
-            var materializationPlan = file.MaterializationPlan;
+            var file = openFile.ExecutionFilePlan;
+            var reader = openFile.Reader;
+            var materializationPlan = file.MaterializationPlan!;
             var projectionPlan = ProjectionPlan<TSource, TResult>.Create(_projection, materializationPlan);
-            var serializerOptions = CreateSerializerOptions();
+            var serializerOptions = openFile.SerializerOptions;
 
             foreach (var rowGroup in file.FilePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead))
             {
@@ -726,7 +690,7 @@ public sealed class ParquetQuery<TSource, TResult>
                     projectionPlan.IsDirectScalar &&
                     isRowFilterTrivial)
                 {
-                    foreach (var result in await ReadProjectedValuesAsync(file.FilePath, reader, rowGroup.Index, rowGroup.RowCount, serializerOptions, projectionPlan, rowGroup.CandidateIntervals, cancellationToken))
+                    foreach (var result in await ReadProjectedValuesAsync(reader, rowGroup.Index, rowGroup.RowCount, serializerOptions, projectionPlan, rowGroup.CandidateIntervals, cancellationToken))
                     {
                         yield return result;
                     }
@@ -737,7 +701,6 @@ public sealed class ParquetQuery<TSource, TResult>
                 if (materializationPlan.RequiresFullMaterialization)
                 {
                     var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
-                        file.FilePath,
                         reader,
                         rowGroup.Index,
                         materializationPlan,
@@ -771,7 +734,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
                 if (projectionPlan.IsDirectScalar)
                 {
-                    foreach (var result in await ProjectDirectScalarResultsAsync(file.FilePath, reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
+                    foreach (var result in await ProjectDirectScalarResultsAsync(reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
                     {
                         yield return result;
                     }
@@ -781,7 +744,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
                 if (projectionPlan.IsVectorized)
                 {
-                    foreach (var result in await ProjectVectorizedResultsAsync(file.FilePath, reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
+                    foreach (var result in await ProjectVectorizedResultsAsync(reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
                     {
                         yield return result;
                     }
@@ -791,7 +754,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
                 if (materializationPlan.DeferredBindings.Any(binding => binding.RequiresFullRowRead))
                 {
-                    foreach (var result in await ProjectFromFullRowsAsync(file.FilePath, rowGroup.Index, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken))
+                    foreach (var result in await ProjectFromFullRowsAsync(rowGroup.Index, reader, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken))
                     {
                         yield return result;
                     }
@@ -891,6 +854,34 @@ public sealed class ParquetQuery<TSource, TResult>
         }
     }
 
+    private async IAsyncEnumerable<OpenQueryExecutionFile<TSource>> OpenExecutionFilesAsync(
+        bool countOnly,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        EnsureStrictPushdown();
+
+        var serializerOptions = CreateSerializerOptions();
+
+        foreach (var filePath in _filePaths)
+        {
+            var fileDecisions = PartitionPruner.Evaluate(filePath, _pushdownFilter.Predicates);
+            if (fileDecisions.Any(decision => !decision.MayMatch))
+            {
+                continue;
+            }
+
+            await using var stream = System.IO.File.OpenRead(filePath);
+            using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
+            var executionFilePlan = await BuildReadableExecutionFilePlanAsync(filePath, fileDecisions, reader, countOnly, cancellationToken);
+            if (!executionFilePlan.FilePlan.ShouldRead || executionFilePlan.MaterializationPlan is null)
+            {
+                continue;
+            }
+
+            yield return new OpenQueryExecutionFile<TSource>(executionFilePlan, reader, serializerOptions);
+        }
+    }
+
     private async Task<QueryExecutionPlan<TSource>> BuildExecutionPlanAsync(CancellationToken cancellationToken, bool countOnly = false)
     {
         EnsureStrictPushdown();
@@ -904,40 +895,20 @@ public sealed class ParquetQuery<TSource, TResult>
 
         foreach (var filePath in _filePaths)
         {
-            var fileDecisions = PartitionPruner.Evaluate(filePath, _pushdownFilter.Predicates);
-            if (fileDecisions.Any(decision => !decision.MayMatch))
+            var executionFilePlan = await BuildExecutionFilePlanAsync(filePath, countOnly, cancellationToken);
+            files.Add(executionFilePlan);
+            filePlans.Add(executionFilePlan.FilePlan);
+
+            if (executionFilePlan.MaterializationPlan is null)
             {
-                var skippedPlan = new QueryFilePlan(
-                    filePath,
-                    shouldRead: false,
-                    reason: "Path partitions ruled the file out.",
-                    decisions: fileDecisions,
-                    rowGroups: Array.Empty<RowGroupPlan>(),
-                    pageIndexAvailable: false);
-                files.Add(new QueryExecutionFilePlan<TSource>(filePath, skippedPlan, materializationPlan: null));
-                filePlans.Add(skippedPlan);
                 continue;
             }
 
-            await using var stream = System.IO.File.OpenRead(filePath);
-            using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
-            var materializationPlan = countOnly
-                ? CreateCountMaterializationPlan(reader.Schema)
-                : CreateMaterializationPlan(reader.Schema);
+            var materializationPlan = executionFilePlan.MaterializationPlan;
             requiresFullMaterialization |= materializationPlan.RequiresFullMaterialization;
             readColumns.UnionWith(materializationPlan.RequiredColumnPaths);
             filterColumns.UnionWith(materializationPlan.FilterColumnPaths);
             deferredColumns.UnionWith(materializationPlan.DeferredColumnPaths);
-
-            var filePlan = await RowGroupPlanner.BuildFilePlanAsync(
-                filePath,
-                reader,
-                _pushdownFilter,
-                fileDecisions,
-                _predicatePlanners,
-                cancellationToken).ConfigureAwait(false);
-            files.Add(new QueryExecutionFilePlan<TSource>(filePath, filePlan, materializationPlan));
-            filePlans.Add(filePlan);
         }
 
         var plan = new ParquetQueryPlan(
@@ -952,8 +923,50 @@ public sealed class ParquetQuery<TSource, TResult>
         return new QueryExecutionPlan<TSource>(plan, files);
     }
 
-    private static async Task<IReadOnlyList<TResult>> ReadProjectedValuesAsync(
+    private async Task<QueryExecutionFilePlan<TSource>> BuildExecutionFilePlanAsync(
         string filePath,
+        bool countOnly,
+        CancellationToken cancellationToken)
+    {
+        var fileDecisions = PartitionPruner.Evaluate(filePath, _pushdownFilter.Predicates);
+        if (fileDecisions.Any(decision => !decision.MayMatch))
+        {
+            var skippedPlan = new QueryFilePlan(
+                filePath,
+                shouldRead: false,
+                reason: "Path partitions ruled the file out.",
+                decisions: fileDecisions,
+                rowGroups: Array.Empty<RowGroupPlan>(),
+                pageIndexAvailable: false);
+            return new QueryExecutionFilePlan<TSource>(filePath, skippedPlan, materializationPlan: null);
+        }
+
+        await using var stream = System.IO.File.OpenRead(filePath);
+        using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
+        return await BuildReadableExecutionFilePlanAsync(filePath, fileDecisions, reader, countOnly, cancellationToken);
+    }
+
+    private async Task<QueryExecutionFilePlan<TSource>> BuildReadableExecutionFilePlanAsync(
+        string filePath,
+        IReadOnlyList<FilePredicateDecision> fileDecisions,
+        ParquetReader reader,
+        bool countOnly,
+        CancellationToken cancellationToken)
+    {
+        var materializationPlan = countOnly
+            ? CreateCountMaterializationPlan(reader.Schema)
+            : CreateMaterializationPlan(reader.Schema);
+        var filePlan = await RowGroupPlanner.BuildFilePlanAsync(
+            filePath,
+            reader,
+            _pushdownFilter,
+            fileDecisions,
+            _predicatePlanners,
+            cancellationToken).ConfigureAwait(false);
+        return new QueryExecutionFilePlan<TSource>(filePath, filePlan, materializationPlan);
+    }
+
+    private static async Task<IReadOnlyList<TResult>> ReadProjectedValuesAsync(
         ParquetReader reader,
         int rowGroupIndex,
         long rowGroupRowCount,
@@ -964,7 +977,14 @@ public sealed class ParquetQuery<TSource, TResult>
     {
         if (projectionPlan.DirectScalarBinding?.RequiresFullRowRead == true)
         {
-            var fullRows = await ParquetSerializer.DeserializeAsync<TSource>(filePath, rowGroupIndex, serializerOptions, cancellationToken);
+            var fullRows = new List<TSource>();
+            await ParquetSerializer.DeserializeAsync(
+                reader,
+                rowGroupIndex,
+                fullRows,
+                cancellationToken,
+                resultsAlreadyAllocated: false,
+                options: serializerOptions);
             return fullRows.Select(projectionPlan.ProjectRow).ToArray();
         }
 
@@ -984,7 +1004,6 @@ public sealed class ParquetQuery<TSource, TResult>
     }
 
     private static async Task<IReadOnlyList<TResult>> ProjectDirectScalarResultsAsync(
-        string filePath,
         ParquetReader reader,
         int rowGroupIndex,
         ParquetSerializerOptions? serializerOptions,
@@ -998,7 +1017,7 @@ public sealed class ParquetQuery<TSource, TResult>
             ?? throw new InvalidOperationException("The projection plan did not contain a direct scalar binding.");
         if (binding.RequiresFullRowRead)
         {
-            return await ProjectFromFullRowsAsync(filePath, rowGroupIndex, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken);
+            return await ProjectFromFullRowsAsync(rowGroupIndex, reader, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken);
         }
 
         if (materializationPlan.FilterBindings.Any(filterBinding => string.Equals(filterBinding.MemberPath, binding.MemberPath, StringComparison.Ordinal)))
@@ -1021,7 +1040,6 @@ public sealed class ParquetQuery<TSource, TResult>
     }
 
     private static async Task<IReadOnlyList<TResult>> ProjectVectorizedResultsAsync(
-        string filePath,
         ParquetReader reader,
         int rowGroupIndex,
         ParquetSerializerOptions? serializerOptions,
@@ -1038,7 +1056,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
         if (projectionPlan.VectorizedBindings.Any(binding => binding.RequiresFullRowRead))
         {
-            return await ProjectFromFullRowsAsync(filePath, rowGroupIndex, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken);
+            return await ProjectFromFullRowsAsync(rowGroupIndex, reader, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken);
         }
 
         var selectedRowIndexes = selectedIndexes
@@ -1085,8 +1103,8 @@ public sealed class ParquetQuery<TSource, TResult>
     }
 
     private static async Task<IReadOnlyList<TResult>> ProjectFromFullRowsAsync(
-        string filePath,
         int rowGroupIndex,
+        ParquetReader reader,
         ParquetSerializerOptions? serializerOptions,
         ProjectionPlan<TSource, TResult> projectionPlan,
         SourceMaterializationPlan<TSource> materializationPlan,
@@ -1094,7 +1112,14 @@ public sealed class ParquetQuery<TSource, TResult>
         IReadOnlyList<int> selectedIndexes,
         CancellationToken cancellationToken)
     {
-        var fullRows = await ParquetSerializer.DeserializeAsync<TSource>(filePath, rowGroupIndex, serializerOptions, cancellationToken);
+        var fullRows = new List<TSource>();
+        await ParquetSerializer.DeserializeAsync(
+            reader,
+            rowGroupIndex,
+            fullRows,
+            cancellationToken,
+            resultsAlreadyAllocated: false,
+            options: serializerOptions);
         foreach (var binding in materializationPlan.DeferredBindings)
         {
             for (var index = 0; index < selectedIndexes.Count; index++)
