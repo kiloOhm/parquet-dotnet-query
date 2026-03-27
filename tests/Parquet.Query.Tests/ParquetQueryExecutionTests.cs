@@ -355,6 +355,69 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ToAsyncEnumerable_handles_full_materialization_projection_path()
+    {
+        var filePath = Path.Combine(_tempDirectory, "async-full-materialization.parquet");
+        await WriteNestedRowsAsync(
+            filePath,
+            new[]
+            {
+                new NestedTestRow
+                {
+                    Id = 1,
+                    Country = "DE",
+                    Address = new TestAddress { City = "Berlin", PostalCode = "10115" },
+                    Metrics = new TestMetrics { Score = 10, Rank = 1 }
+                },
+                new NestedTestRow
+                {
+                    Id = 2,
+                    Country = "US",
+                    Address = new TestAddress { City = "Boston", PostalCode = "02108" },
+                    Metrics = new TestMetrics { Score = 20, Rank = 2 }
+                }
+            });
+
+        var query = ParquetQuery
+            .FromFile<NestedTestRow>(filePath)
+            .Select(row => Identity(row).Address.City);
+
+        var cities = new List<string>();
+        await foreach (var city in query.ToAsyncEnumerable())
+        {
+            cities.Add(city);
+        }
+
+        Assert.Equal(new[] { "Berlin", "Boston" }, cities.ToArray());
+    }
+
+    [Fact]
+    public async Task ToAsyncEnumerable_returns_empty_when_no_rows_match()
+    {
+        var filePath = Path.Combine(_tempDirectory, "async-empty.parquet");
+        await WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 },
+                new TestRow { Id = 2, Country = "US", Name = "beta", Age = 20 }
+            });
+
+        var query = ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Pushdown(filter => filter.Ge(row => row.Age, 99))
+            .Select(row => row.Name);
+
+        var names = new List<string>();
+        await foreach (var name in query.ToAsyncEnumerable())
+        {
+            names.Add(name);
+        }
+
+        Assert.Empty(names);
+    }
+
+    [Fact]
     public async Task ExplainAsync_reports_pushdown_residual_and_read_columns()
     {
         var filePath = Path.Combine(_tempDirectory, "explain.parquet");
@@ -388,6 +451,28 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         Assert.Contains("Residual: row.Address.City.EndsWith(\"h\")", explanation);
         Assert.Contains("Read Columns: Address/City, Metrics/Score", explanation);
         Assert.Contains("RG 0:", explanation);
+    }
+
+    [Fact]
+    public async Task ExplainAsync_reports_page_pruning_source_and_counts()
+    {
+        var filePath = Path.Combine(_tempDirectory, "explain-page-pruning.parquet");
+        await WriteRowsAsync(
+            filePath,
+            Enumerable.Range(1, 6)
+                .Select(age => new TestRow { Id = age, Country = "DE", Name = $"row-{age}", Age = age })
+                .ToArray(),
+            configureOptions: options => options.DataPageRowCountLimit = 2,
+            configureSerializerOptions: options => options.RowGroupSize = 6);
+
+        var explanation = await ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Pushdown(filter => filter.Ge(row => row.Age, 5))
+            .ExplainAsync();
+
+        Assert.Contains("Page Indexes: available", explanation);
+        Assert.Contains("pages 1/3", explanation);
+        Assert.Contains("page pruning: persisted", explanation);
     }
 
     [Fact]
@@ -695,6 +780,86 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             .ToListAsync();
 
         Assert.Equal(new[] { "alpha", "beta" }, names.ToArray());
+    }
+
+    [Fact]
+    public async Task Footer_encrypted_page_indexes_support_page_pruning()
+    {
+        var filePath = Path.Combine(_tempDirectory, "footer-encrypted-page-indexes.parquet");
+        const string footerKey = "0123456789ABCDEF";
+
+        await WriteRowsAsync(
+            filePath,
+            Enumerable.Range(1, 6)
+                .Select(age => new TestRow { Id = age, Country = "DE", Name = $"row-{age}", Age = age })
+                .ToArray(),
+            options =>
+            {
+                options.FooterEncryptionKey = footerKey;
+                options.DataPageRowCountLimit = 2;
+            },
+            serializer => serializer.RowGroupSize = 6);
+
+        var query = ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .WithFooterKey(footerKey)
+            .Pushdown(filter => filter.Ge(row => row.Age, 5));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        var rowGroup = Assert.Single(plan.RowGroups);
+        Assert.True(plan.PageIndexAvailable);
+        Assert.Equal("persisted", rowGroup.PagePruningSource);
+        Assert.Equal(1, rowGroup.SelectedPageCount);
+        Assert.Equal(new[] { 5, 6 }, rows.Select(row => row.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task Column_encrypted_page_indexes_support_pruning_with_key_resolver()
+    {
+        var filePath = Path.Combine(_tempDirectory, "column-encrypted-page-indexes.parquet");
+        const string footerKey = "FEDCBA9876543210";
+        const string columnKey = "0011223344556677";
+        var keyMetadata = System.Text.Encoding.UTF8.GetBytes("age-column-key");
+
+        await WriteRowsAsync(
+            filePath,
+            Enumerable.Range(1, 6)
+                .Select(age => new TestRow { Id = age, Country = "DE", Name = $"row-{age}", Age = age })
+                .ToArray(),
+            options =>
+            {
+                options.FooterEncryptionKey = footerKey;
+                options.ColumnKeys["Age"] = new ParquetOptions.ColumnKeySpec(columnKey, keyMetadata);
+                options.DataPageRowCountLimit = 2;
+            },
+            serializer => serializer.RowGroupSize = 6);
+
+        var query = ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .WithFooterKey(footerKey)
+            .WithColumnKeyResolver((path, metadata) =>
+            {
+                if (path.Count > 0 &&
+                    string.Equals(path[^1], "Age", StringComparison.Ordinal) &&
+                    metadata is not null &&
+                    metadata.SequenceEqual(keyMetadata))
+                {
+                    return columnKey;
+                }
+
+                return null;
+            })
+            .Pushdown(filter => filter.Ge(row => row.Age, 5));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        var rowGroup = Assert.Single(plan.RowGroups);
+        Assert.True(plan.PageIndexAvailable);
+        Assert.Equal(1, rowGroup.SelectedPageCount);
+        Assert.Equal(new[] { 5, 6 }, rows.Select(row => row.Id).ToArray());
     }
 
     [Fact]

@@ -67,13 +67,28 @@ internal static class PagePruner
             : 0;
 
         return survivingIntervals is null
-            ? PagePruningResult.Full(rowGroupReader.RowCount)
+            ? new PagePruningResult(
+                new[] { new RowInterval(0, rowGroupReader.RowCount) },
+                pageCount,
+                selectedPageCount: 0,
+                pageIndexAvailable,
+                usedFallback,
+                source: pageIndexAvailable ? (usedFallback ? "fallback" : "persisted") : "unavailable",
+                reason: pageIndexAvailable
+                    ? "No plannable page-level statistics were available for the requested predicates."
+                    : "Page indexes were unavailable for the requested predicates.")
             : new PagePruningResult(
                 survivingIntervals,
                 pageCount,
                 selectedPageCount,
                 pageIndexAvailable,
-                usedFallback);
+                usedFallback,
+                source: pageIndexAvailable ? (usedFallback ? "fallback" : "persisted") : "unavailable",
+                reason: pageIndexAvailable
+                    ? selectedPageCount == pageCount
+                        ? "Page indexes were available but could not narrow the surviving page set."
+                        : "Page indexes narrowed the surviving page set."
+                    : "Page indexes were unavailable for the requested predicates.");
     }
 
     public static bool IsFullCoverage(IReadOnlyList<RowInterval> intervals, long rowCount) =>
@@ -436,20 +451,26 @@ internal sealed class PagePruningResult
         pageCount: 0,
         selectedPageCount: 0,
         pageIndexAvailable: false,
-        usedFallbackIndex: false);
+        usedFallbackIndex: false,
+        source: "unavailable",
+        reason: "Page pruning was not applied.");
 
     public PagePruningResult(
         IReadOnlyList<RowInterval> intervals,
         int pageCount,
         int selectedPageCount,
         bool pageIndexAvailable,
-        bool usedFallbackIndex)
+        bool usedFallbackIndex,
+        string source,
+        string reason)
     {
         Intervals = intervals;
         PageCount = pageCount;
         SelectedPageCount = selectedPageCount;
         PageIndexAvailable = pageIndexAvailable;
         UsedFallbackIndex = usedFallbackIndex;
+        Source = source;
+        Reason = reason;
     }
 
     public IReadOnlyList<RowInterval> Intervals { get; }
@@ -461,6 +482,10 @@ internal sealed class PagePruningResult
     public bool PageIndexAvailable { get; }
 
     public bool UsedFallbackIndex { get; }
+
+    public string Source { get; }
+
+    public string Reason { get; }
 
     public long CandidateRowCountUpperBound => Intervals.Sum(interval => interval.End - interval.Start);
 }

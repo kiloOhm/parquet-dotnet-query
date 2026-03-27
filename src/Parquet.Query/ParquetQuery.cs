@@ -272,9 +272,11 @@ public sealed class ParquetQuery<TSource, TResult>
             ? "Late Materialization: enabled"
             : "Late Materialization: not needed");
 
-        builder.AppendLine(plan.PageIndexAvailable
-            ? "Page Indexes: page-level pruning enabled when page indexes or fallback scans are available."
-            : "Page Indexes: unavailable");
+        builder.AppendLine(!plan.PageIndexAvailable
+            ? "Page Indexes: unavailable"
+            : plan.UsedFallbackPageIndex
+                ? $"Page Indexes: available, using persisted and fallback indexes where needed ({plan.SelectedPageCount}/{plan.TotalPageCount} pages selected)."
+                : $"Page Indexes: available from persisted metadata ({plan.SelectedPageCount}/{plan.TotalPageCount} pages selected).");
 
         foreach (var file in plan.Files)
         {
@@ -290,9 +292,9 @@ public sealed class ParquetQuery<TSource, TResult>
                     ? $", pages {rowGroup.SelectedPageCount}/{rowGroup.PageCount}, candidate rows <= {rowGroup.CandidateRowCountUpperBound}"
                     : string.Empty;
                 builder.AppendLine($"  RG {rowGroup.Index}: {(rowGroup.ShouldRead ? "read" : "skip")} ({rowGroup.RowCount} rows{pageDetails})");
-                if (rowGroup.UsedFallbackPageIndex)
+                if (rowGroup.PageCount > 0 || rowGroup.PageIndexAvailable)
                 {
-                    builder.AppendLine("    page index source: computed in memory because persisted page indexes were unavailable.");
+                    builder.AppendLine($"    page pruning: {rowGroup.PagePruningSource} ({rowGroup.PagePruningReason})");
                 }
 
                 foreach (var decision in rowGroup.Decisions)

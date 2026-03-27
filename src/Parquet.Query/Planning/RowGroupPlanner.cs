@@ -63,7 +63,9 @@ internal static class RowGroupPlanner
                 pagePruning.PageCount,
                 pagePruning.SelectedPageCount,
                 shouldRead ? pagePruning.CandidateRowCountUpperBound : 0,
-                pagePruning.UsedFallbackIndex));
+                pagePruning.UsedFallbackIndex,
+                pagePruning.Source,
+                pagePruning.Reason));
         }
 
         var fileShouldRead = fileDecisions.All(decision => decision.MayMatch) && rowGroups.Any(rowGroup => rowGroup.ShouldRead);

@@ -5,4 +5,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/Parquet.Query.Tests/Parquet.Query.Tests.csproj" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/Parquet.Query.Benchmarks/Parquet.Query.Benchmarks.csproj" />
+  </Folder>
 </Solution>

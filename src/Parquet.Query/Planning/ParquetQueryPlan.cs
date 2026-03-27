@@ -40,6 +40,8 @@ public sealed class ParquetQueryPlan
 
     public bool PageIndexAvailable => Files.Any(file => file.PageIndexAvailable);
 
+    public bool UsedFallbackPageIndex => RowGroups.Any(rowGroup => rowGroup.UsedFallbackPageIndex);
+
     public IReadOnlyList<RowGroupPlan> RowGroups => Files.SelectMany(file => file.RowGroups).ToArray();
 
     public int SelectedFileCount => Files.Count(file => file.ShouldRead);
@@ -47,6 +49,10 @@ public sealed class ParquetQueryPlan
     public int SelectedRowGroupCount => RowGroups.Count(rowGroup => rowGroup.ShouldRead);
 
     public long SelectedRowCountUpperBound => RowGroups.Where(rowGroup => rowGroup.ShouldRead).Sum(rowGroup => rowGroup.CandidateRowCountUpperBound);
+
+    public int SelectedPageCount => RowGroups.Where(rowGroup => rowGroup.ShouldRead).Sum(rowGroup => rowGroup.SelectedPageCount);
+
+    public int TotalPageCount => RowGroups.Sum(rowGroup => rowGroup.PageCount);
 }
 
 public sealed class QueryFilePlan
@@ -113,7 +119,9 @@ public sealed class RowGroupPlan
         int pageCount,
         int selectedPageCount,
         long candidateRowCountUpperBound,
-        bool usedFallbackPageIndex)
+        bool usedFallbackPageIndex,
+        string pagePruningSource,
+        string pagePruningReason)
     {
         FilePath = filePath;
         Index = index;
@@ -125,6 +133,8 @@ public sealed class RowGroupPlan
         SelectedPageCount = selectedPageCount;
         CandidateRowCountUpperBound = candidateRowCountUpperBound;
         UsedFallbackPageIndex = usedFallbackPageIndex;
+        PagePruningSource = pagePruningSource;
+        PagePruningReason = pagePruningReason;
     }
 
     public string FilePath { get; }
@@ -146,6 +156,10 @@ public sealed class RowGroupPlan
     public long CandidateRowCountUpperBound { get; }
 
     public bool UsedFallbackPageIndex { get; }
+
+    public string PagePruningSource { get; }
+
+    public string PagePruningReason { get; }
 }
 
 public sealed class RowGroupPredicateDecision

@@ -98,6 +98,7 @@ You will see:
 - selected pages and candidate-row upper bounds when page pruning applies
 - filter columns versus deferred columns
 - whether pruning was based on partitions, statistics, bloom filters, persisted page indexes, or fallback page-index scans
+- page-pruning source per row group (`persisted`, `fallback`, or `unavailable`)
 
 If you want unsupported residual logic to fail fast instead of silently falling back, use:
 
@@ -162,6 +163,18 @@ Restore, build, and test:
 dotnet build Parquet.Query.slnx
 dotnet test Parquet.Query.slnx
 ```
+
+Run the included benchmarks:
+
+```powershell
+dotnet run -c Release --project benchmarks/Parquet.Query.Benchmarks/Parquet.Query.Benchmarks.csproj
+```
+
+The benchmark project compares:
+
+- full-file deserialize plus in-memory filtering
+- query execution with row-group pushdown
+- query execution with page pruning and projection
 
 ## License
 
