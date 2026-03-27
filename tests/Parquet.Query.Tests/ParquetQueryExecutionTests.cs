@@ -1,6 +1,9 @@
+using System.Linq.Expressions;
 using System.Text;
 using Parquet;
 using Parquet.Meta;
+using Parquet.Query.Planning;
+using Parquet.Query.Pushdown;
 using Parquet.Serialization;
 
 namespace Parquet.Query.Tests;
@@ -1063,6 +1066,45 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Custom_predicate_planners_can_prune_files_from_footer_metadata()
+    {
+        var deFilePath = Path.Combine(_tempDirectory, "footer-de.parquet");
+        var usFilePath = Path.Combine(_tempDirectory, "footer-us.parquet");
+
+        await WriteRowsAsync(
+            deFilePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 },
+                new TestRow { Id = 2, Country = "DE", Name = "bravo", Age = 20 }
+            });
+        await WriteRowsAsync(
+            usFilePath,
+            new[]
+            {
+                new TestRow { Id = 3, Country = "US", Name = "charlie", Age = 30 },
+                new TestRow { Id = 4, Country = "US", Name = "delta", Age = 40 }
+            });
+
+        await SetFileMetadataAsync(deFilePath, new Dictionary<string, string> { ["country"] = "DE" });
+        await SetFileMetadataAsync(usFilePath, new Dictionary<string, string> { ["country"] = "US" });
+
+        var query = ParquetQuery
+            .FromFiles<TestRow>(new[] { deFilePath, usFilePath })
+            .WithPredicatePlanner(new FooterMetadataPredicatePlanner<TestRow>())
+            .Pushdown(filter => filter.Add(new FooterMetadataEqualsPredicate<TestRow>(row => row.Country, "country", "DE")));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.Equal(new[] { 1, 2 }, rows.Select(row => row.Id).ToArray());
+        Assert.Equal(1, plan.Files.Count(file => file.ShouldRead));
+        Assert.Contains(
+            plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions),
+            decision => decision.Source == "footer-metadata" && !decision.MayMatch);
+    }
+
+    [Fact]
     public async Task ToListAsync_without_projection_uses_page_pruning_for_simple_rows()
     {
         var filePath = Path.Combine(_tempDirectory, "full-row-page-pruning.parquet");
@@ -1492,6 +1534,44 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
 
     private static T Identity<T>(T value) => value;
 
+    private static async Task SetFileMetadataAsync(string filePath, IReadOnlyDictionary<string, string> metadata)
+    {
+        var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
+
+        using var input = new MemoryStream(fileBytes, writable: false);
+        using var reader = await ParquetReader.CreateAsync(input);
+
+        FileMetaData footerMetadata = reader.Metadata!;
+        footerMetadata.KeyValueMetadata = reader.CustomMetadata
+            .Concat(metadata)
+            .GroupBy(entry => entry.Key, StringComparer.Ordinal)
+            .Select(group => new KeyValue { Key = group.Key, Value = group.Last().Value })
+            .ToList();
+
+        var originalFooterLength = BitConverter.ToInt32(fileBytes, fileBytes.Length - 8);
+        var footerStart = fileBytes.Length - 8 - originalFooterLength;
+
+        using var output = new MemoryStream();
+        await output.WriteAsync(fileBytes.AsMemory(0, footerStart));
+
+        var footerType = typeof(ParquetReader).Assembly.GetType("Parquet.File.ThriftFooter", throwOnError: true)
+            ?? throw new InvalidOperationException("Parquet.File.ThriftFooter could not be loaded.");
+        var footer = Activator.CreateInstance(footerType, footerMetadata)
+            ?? throw new InvalidOperationException("Parquet.File.ThriftFooter could not be created.");
+        var writeMethod = footerType.GetMethod(
+            "Write",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic,
+            binder: null,
+            types: new[] { typeof(Stream) },
+            modifiers: null)
+            ?? throw new InvalidOperationException("Parquet.File.ThriftFooter.Write(Stream) could not be found.");
+        var newFooterLength = checked(Convert.ToInt32(writeMethod.Invoke(footer, new object[] { output })));
+        await output.WriteAsync(BitConverter.GetBytes(newFooterLength));
+        await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PAR1"));
+
+        await System.IO.File.WriteAllBytesAsync(filePath, output.ToArray());
+    }
+
     private static async Task RemovePageIndexesFromFooterAsync(string filePath)
     {
         var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
@@ -1533,5 +1613,66 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PAR1"));
 
         await System.IO.File.WriteAllBytesAsync(filePath, output.ToArray());
+    }
+
+    private sealed class FooterMetadataEqualsPredicate<T> : PushdownPredicate<T>
+        where T : class, new()
+    {
+        public FooterMetadataEqualsPredicate(
+            Expression<Func<T, string?>> selector,
+            string metadataKey,
+            string expectedValue)
+            : base(
+                PushdownColumnPath.Resolve(selector).MemberPath,
+                PushdownColumnPath.Resolve(selector).ColumnPath,
+                $"footer[{metadataKey}] == \"{expectedValue}\"",
+                CreateRowPredicate(selector, expectedValue))
+        {
+            MetadataKey = metadataKey;
+            ExpectedValue = expectedValue;
+        }
+
+        public string MetadataKey { get; }
+
+        public string ExpectedValue { get; }
+
+        private static Func<T, bool> CreateRowPredicate(Expression<Func<T, string?>> selector, string expectedValue)
+        {
+            var compiledSelector = selector.Compile();
+            return row => string.Equals(compiledSelector(row), expectedValue, StringComparison.Ordinal);
+        }
+    }
+
+    private sealed class FooterMetadataPredicatePlanner<T> : IParquetPredicatePlanner<T>
+        where T : class, new()
+    {
+        public bool CanPlan(PushdownPredicate<T> predicate) => predicate is FooterMetadataEqualsPredicate<T>;
+
+        public RowGroupPredicateDecision? TryEvaluateRowGroup(
+            ParquetRowGroupPlannerContext context,
+            PushdownPredicate<T> predicate)
+        {
+            if (predicate is not FooterMetadataEqualsPredicate<T> footerPredicate)
+            {
+                return null;
+            }
+
+            var mayMatch = context.Reader.CustomMetadata.TryGetValue(footerPredicate.MetadataKey, out var actualValue) &&
+                string.Equals(actualValue, footerPredicate.ExpectedValue, StringComparison.Ordinal);
+
+            return new RowGroupPredicateDecision(
+                predicate.Description,
+                mayMatch,
+                "footer-metadata",
+                mayMatch
+                    ? $"Footer metadata '{footerPredicate.MetadataKey}' matched '{footerPredicate.ExpectedValue}'."
+                    : $"Footer metadata '{footerPredicate.MetadataKey}' did not match '{footerPredicate.ExpectedValue}'.");
+        }
+
+        public ValueTask<PagePruningResult?> TryPrunePagesAsync(
+            ParquetPagePruningContext context,
+            PushdownPredicate<T> predicate,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<PagePruningResult?>(null);
     }
 }

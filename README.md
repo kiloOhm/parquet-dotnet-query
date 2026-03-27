@@ -20,6 +20,7 @@ The current implementation focuses on file pruning, row-group pruning, page prun
 - Page-index-based page pruning within surviving row groups
 - Partition-aware file pruning for directory layouts like `Country=DE/...`
 - Bloom-filter-aware equality pruning when bloom filters are present
+- Extensible predicate planners for custom footer or sidecar indexes
 - Late materialization for projected queries
 - Nested POCO materialization
 - Nested projection with column pruning
@@ -109,6 +110,16 @@ var rows = await ParquetQuery
     .StrictPushdown()
     .ToListAsync();
 ```
+
+## Extensibility
+
+Custom pushdown predicates can be added without forking the core query engine:
+
+- create a custom `PushdownPredicate<T>`
+- add it through `Pushdown(filter => filter.Add(...))`
+- register one or more `IParquetPredicatePlanner<T>` instances with `WithPredicatePlanner(...)` or `WithPredicatePlanners(...)`
+
+This lets extension packages use footer metadata, sidecar indexes, or custom row-group/page pruning logic while keeping residual row-level verification in the main query pipeline.
 
 ## Encryption Support
 
