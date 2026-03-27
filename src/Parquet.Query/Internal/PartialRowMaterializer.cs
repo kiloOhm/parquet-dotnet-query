@@ -374,8 +374,16 @@ internal static class PartialRowMaterializer<TSource>
         return true;
     }
 
-    private static TSource[] CreateRowBuffer(int rowCount) =>
-        Enumerable.Range(0, rowCount).Select(_ => new TSource()).ToArray();
+    private static TSource[] CreateRowBuffer(int rowCount)
+    {
+        var rows = new TSource[rowCount];
+        for (var index = 0; index < rowCount; index++)
+        {
+            rows[index] = new TSource();
+        }
+
+        return rows;
+    }
 }
 
 internal sealed class MaterializedRowSet<TSource>
