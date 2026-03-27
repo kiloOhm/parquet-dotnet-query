@@ -43,7 +43,19 @@ internal static class LuceneFooterIndexStorage
             compression.CopyTo(json);
             return JsonSerializer.Deserialize<LuceneFooterIndexModel>(json.ToArray(), JsonOptions);
         }
-        catch
+        catch (FormatException)
+        {
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        catch (InvalidDataException)
+        {
+            return null;
+        }
+        catch (InvalidOperationException)
         {
             return null;
         }
