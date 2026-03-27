@@ -33,6 +33,10 @@ public static class ParquetQuery
 public sealed class ParquetQuery<TSource, TResult>
     where TSource : class, new()
 {
+    private static readonly StringComparer FilePathComparer = OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
+
     private readonly IReadOnlyList<string> _filePaths;
     private readonly ParquetOptions? _parquetOptions;
     private readonly PushdownFilter<TSource> _pushdownFilter;
@@ -73,8 +77,8 @@ public sealed class ParquetQuery<TSource, TResult>
         var normalizedFilePaths = filePaths
             .Where(path => !string.IsNullOrWhiteSpace(path))
             .Select(path => Path.GetFullPath(path))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .Distinct(FilePathComparer)
+            .OrderBy(path => path, FilePathComparer)
             .ToArray();
 
         if (normalizedFilePaths.Length == 0)
