@@ -1,3 +1,5 @@
+using System.Linq;
+
 namespace Parquet.Query.Internal;
 
 internal sealed class SourceMaterializationPlan<TSource>
@@ -50,16 +52,27 @@ internal sealed class SourceMaterializationPlan<TSource>
     public IReadOnlyList<string> RequiredColumnPaths { get; }
 
     public bool UsesLateMaterialization => !RequiresFullMaterialization && DeferredBindings.Count > 0;
+
+    public SourceColumnBinding<TSource>? FindBinding(string memberPath) =>
+        FilterBindings.Concat(ResultBindings)
+            .FirstOrDefault(binding => string.Equals(binding.MemberPath, memberPath, StringComparison.Ordinal));
 }
 
 internal sealed class SourceColumnBinding<TSource>
     where TSource : class, new()
 {
-    public SourceColumnBinding(string memberPath, string columnPath, Action<TSource, object?> assign)
+    public SourceColumnBinding(
+        string memberPath,
+        string columnPath,
+        Action<TSource, object?> assign,
+        Func<TSource, object?> read,
+        bool requiresFullRowRead)
     {
         MemberPath = memberPath;
         ColumnPath = columnPath;
         Assign = assign;
+        Read = read;
+        RequiresFullRowRead = requiresFullRowRead;
     }
 
     public string MemberPath { get; }
@@ -67,4 +80,8 @@ internal sealed class SourceColumnBinding<TSource>
     public string ColumnPath { get; }
 
     public Action<TSource, object?> Assign { get; }
+
+    public Func<TSource, object?> Read { get; }
+
+    public bool RequiresFullRowRead { get; }
 }

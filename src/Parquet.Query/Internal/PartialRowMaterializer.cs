@@ -2,6 +2,7 @@ using Parquet;
 using Parquet.Query.Planning;
 using Parquet.Schema;
 using Parquet.Serialization;
+using System.Linq;
 
 namespace Parquet.Query.Internal;
 
@@ -18,6 +19,12 @@ internal static class PartialRowMaterializer<TSource>
         CancellationToken cancellationToken)
     {
         if (plan.RequiresFullMaterialization)
+        {
+            var deserializedRows = await ParquetSerializer.DeserializeAsync<TSource>(filePath, rowGroupIndex, serializerOptions, cancellationToken);
+            return deserializedRows.ToArray();
+        }
+
+        if (plan.DeferredBindings.Any(binding => binding.RequiresFullRowRead))
         {
             var deserializedRows = await ParquetSerializer.DeserializeAsync<TSource>(filePath, rowGroupIndex, serializerOptions, cancellationToken);
             return deserializedRows.ToArray();
@@ -78,6 +85,69 @@ internal static class PartialRowMaterializer<TSource>
         await PopulateBindingsAsync(rowGroupReader, reader.Schema, selectedRows, selectedRowIndexes, plan.DeferredBindings, cancellationToken);
     }
 
+    public static async Task<object?[]> ReadColumnValuesAsync(
+        ParquetReader reader,
+        int rowGroupIndex,
+        string columnPath,
+        IReadOnlyList<int> rowIndexes,
+        CancellationToken cancellationToken)
+    {
+        using var rowGroupReader = reader.OpenRowGroupReader(rowGroupIndex);
+        return await ReadColumnValuesAsync(rowGroupReader, reader.Schema, columnPath, rowIndexes, cancellationToken);
+    }
+
+    public static async Task<object?[]> ReadColumnValuesAsync(
+        IParquetRowGroupReader rowGroupReader,
+        ParquetSchema schema,
+        string columnPath,
+        IReadOnlyList<int> rowIndexes,
+        CancellationToken cancellationToken)
+    {
+        if (rowIndexes.Count == 0)
+        {
+            return Array.Empty<object?>();
+        }
+
+        var dataFields = schema.GetDataFields()
+            .ToDictionary(field => field.Path.ToString(), StringComparer.Ordinal);
+        if (!dataFields.TryGetValue(columnPath, out DataField? field))
+        {
+            return new object?[rowIndexes.Count];
+        }
+
+        if (field.IsArray)
+        {
+            var column = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
+            return CopyIndexedValues(rowIndexes, column.Data);
+        }
+
+        var values = new object?[rowIndexes.Count];
+        var fullCoverage = rowIndexes.Count == rowGroupReader.RowCount && IsIdentityMap(rowIndexes);
+        if (fullCoverage)
+        {
+            var column = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
+            CopyDenseValues(values, column.Data);
+            return values;
+        }
+
+        var rowIntervals = PagePruner.ToIntervals(rowIndexes);
+        if (rowIntervals.Count == 0)
+        {
+            return values;
+        }
+
+        var pageReader = await rowGroupReader.OpenColumnPageReaderAsync(field, cancellationToken);
+        var pageOrdinals = PagePruner.SelectPageOrdinals(pageReader.OffsetIndex, rowIntervals, rowGroupReader.RowCount);
+        if (pageOrdinals.Count == 0)
+        {
+            return values;
+        }
+
+        var pages = await pageReader.ReadPagesAsync(pageOrdinals, cancellationToken);
+        CopySparseValues(values, rowIndexes, pages);
+        return values;
+    }
+
     private static async Task PopulateBindingsAsync(
         IParquetRowGroupReader rowGroupReader,
         ParquetSchema schema,
@@ -102,6 +172,13 @@ internal static class PartialRowMaterializer<TSource>
         {
             if (!dataFields.TryGetValue(binding.ColumnPath, out DataField? field))
             {
+                continue;
+            }
+
+            if (field.IsArray)
+            {
+                var column = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
+                AssignIndexedValues(binding, rows, rowIndexes, column.Data);
                 continue;
             }
 
@@ -141,6 +218,47 @@ internal static class PartialRowMaterializer<TSource>
         }
     }
 
+    private static void AssignIndexedValues(
+        SourceColumnBinding<TSource> binding,
+        IReadOnlyList<TSource> rows,
+        IReadOnlyList<int> rowIndexes,
+        Array data)
+    {
+        var length = Math.Min(rows.Count, rowIndexes.Count);
+        for (var index = 0; index < length; index++)
+        {
+            var sourceIndex = rowIndexes[index];
+            if ((uint)sourceIndex < (uint)data.Length)
+            {
+                binding.Assign(rows[index], data.GetValue(sourceIndex));
+            }
+        }
+    }
+
+    private static void CopyDenseValues(object?[] target, Array data)
+    {
+        var length = Math.Min(target.Length, data.Length);
+        for (var index = 0; index < length; index++)
+        {
+            target[index] = data.GetValue(index);
+        }
+    }
+
+    private static object?[] CopyIndexedValues(IReadOnlyList<int> rowIndexes, Array data)
+    {
+        var values = new object?[rowIndexes.Count];
+        for (var index = 0; index < rowIndexes.Count; index++)
+        {
+            var sourceIndex = rowIndexes[index];
+            if ((uint)sourceIndex < (uint)data.Length)
+            {
+                values[index] = data.GetValue(sourceIndex);
+            }
+        }
+
+        return values;
+    }
+
     private static void AssignSparseValues(
         SourceColumnBinding<TSource> binding,
         IReadOnlyList<TSource> rows,
@@ -165,6 +283,42 @@ internal static class PartialRowMaterializer<TSource>
                 if ((uint)pageRowIndex < (uint)data.Length)
                 {
                     binding.Assign(rows[pageDenseIndex], data.GetValue(pageRowIndex));
+                }
+
+                pageDenseIndex++;
+            }
+
+            denseIndex = pageDenseIndex;
+            if (denseIndex >= rowIndexes.Count)
+            {
+                break;
+            }
+        }
+    }
+
+    private static void CopySparseValues(
+        object?[] target,
+        IReadOnlyList<int> rowIndexes,
+        IReadOnlyList<ParquetDataPage> pages)
+    {
+        var denseIndex = 0;
+        foreach (var page in pages)
+        {
+            var pageStart = page.Location.FirstRowIndex;
+            var pageEnd = pageStart + page.RowCount;
+            while (denseIndex < rowIndexes.Count && rowIndexes[denseIndex] < pageStart)
+            {
+                denseIndex++;
+            }
+
+            var data = page.Column.Data;
+            var pageDenseIndex = denseIndex;
+            while (pageDenseIndex < rowIndexes.Count && rowIndexes[pageDenseIndex] < pageEnd)
+            {
+                var pageRowIndex = checked((int)(rowIndexes[pageDenseIndex] - pageStart));
+                if ((uint)pageRowIndex < (uint)data.Length)
+                {
+                    target[pageDenseIndex] = data.GetValue(pageRowIndex);
                 }
 
                 pageDenseIndex++;

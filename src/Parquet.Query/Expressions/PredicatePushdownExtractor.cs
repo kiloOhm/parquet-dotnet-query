@@ -12,35 +12,37 @@ public static class PredicatePushdownExtractor
         ArgumentNullException.ThrowIfNull(predicate);
 
         var pushdownPredicates = new List<PushdownPredicate<T>>();
-        var residualExpressions = new List<Expression>();
+        var residualDiagnostics = new List<PredicatePushdownDiagnostic>();
 
-        Collect(predicate.Body, predicate.Parameters[0], pushdownPredicates, residualExpressions);
+        Collect(predicate.Body, predicate.Parameters[0], pushdownPredicates, residualDiagnostics);
 
         Expression<Func<T, bool>>? residualPredicate = null;
-        if (residualExpressions.Count > 0)
+        if (residualDiagnostics.Count > 0)
         {
-            var residualBody = residualExpressions.Aggregate(Expression.AndAlso);
+            var residualBody = residualDiagnostics
+                .Select(diagnostic => diagnostic.Expression)
+                .Aggregate(Expression.AndAlso);
             residualPredicate = Expression.Lambda<Func<T, bool>>(residualBody, predicate.Parameters);
         }
 
         return new PredicatePushdownSplit<T>(
             new PushdownFilter<T>(pushdownPredicates),
             residualPredicate,
-            residualExpressions.Select(expression => expression.ToString()).ToArray());
+            residualDiagnostics);
     }
 
     private static void Collect<T>(
         Expression expression,
         ParameterExpression parameter,
         List<PushdownPredicate<T>> pushdownPredicates,
-        List<Expression> residualExpressions)
+        List<PredicatePushdownDiagnostic> residualDiagnostics)
     {
         expression = ColumnPathResolver.StripConvert(expression);
 
         if (expression is BinaryExpression { NodeType: ExpressionType.AndAlso } andAlso)
         {
-            Collect(andAlso.Left, parameter, pushdownPredicates, residualExpressions);
-            Collect(andAlso.Right, parameter, pushdownPredicates, residualExpressions);
+            Collect(andAlso.Left, parameter, pushdownPredicates, residualDiagnostics);
+            Collect(andAlso.Right, parameter, pushdownPredicates, residualDiagnostics);
             return;
         }
 
@@ -50,7 +52,7 @@ public static class PredicatePushdownExtractor
             return;
         }
 
-        residualExpressions.Add(expression);
+        residualDiagnostics.Add(new PredicatePushdownDiagnostic(expression, ExplainUnsupported(expression, parameter)));
     }
 
     private static bool TryTranslatePredicate<T>(
@@ -113,6 +115,72 @@ public static class PredicatePushdownExtractor
             prefix);
 
         return true;
+    }
+
+    private static string ExplainUnsupported(Expression expression, ParameterExpression parameter)
+    {
+        expression = ColumnPathResolver.StripConvert(expression);
+
+        if (expression is BinaryExpression { NodeType: ExpressionType.OrElse })
+        {
+            return "Logical OR predicates are not pushed down yet; only AND chains are extractable.";
+        }
+
+        if (expression is UnaryExpression { NodeType: ExpressionType.Not })
+        {
+            return "Negated predicates are not normalized for pushdown yet.";
+        }
+
+        if (expression is MethodCallExpression methodCallExpression)
+        {
+            if (string.Equals(methodCallExpression.Method.Name, nameof(string.StartsWith), StringComparison.Ordinal))
+            {
+                if (methodCallExpression.Arguments.Count == 2 &&
+                    TryEvaluateClosedValue(methodCallExpression.Arguments[1], out object? comparisonValue) &&
+                    comparisonValue is not StringComparison.Ordinal)
+                {
+                    return "string.StartsWith is only pushdown-eligible with StringComparison.Ordinal.";
+                }
+
+                return "string.StartsWith pushdown requires a direct member access and a closed-over string prefix.";
+            }
+
+            return "Method calls are not pushdown-eligible except string.StartsWith(..., StringComparison.Ordinal).";
+        }
+
+        if (expression is BinaryExpression binaryExpression)
+        {
+            if (!TryMapOperator(binaryExpression.NodeType, out ComparisonOperator @operator))
+            {
+                return "Only ==, !=, <, <=, >, and >= comparisons are pushdown-eligible.";
+            }
+
+            if ((ColumnPathResolver.TryFromExpression(binaryExpression.Left, parameter, out _) &&
+                 !TryEvaluateClosedValue(binaryExpression.Right, out _)) ||
+                (ColumnPathResolver.TryFromExpression(binaryExpression.Right, parameter, out _) &&
+                 !TryEvaluateClosedValue(binaryExpression.Left, out _)))
+            {
+                return "Pushdown comparisons must compare a direct member access to a closed-over constant value.";
+            }
+
+            if ((TryEvaluateClosedValue(binaryExpression.Left, out _) &&
+                 !ColumnPathResolver.TryFromExpression(binaryExpression.Right, parameter, out _)) ||
+                (TryEvaluateClosedValue(binaryExpression.Right, out _) &&
+                 !ColumnPathResolver.TryFromExpression(binaryExpression.Left, parameter, out _)))
+            {
+                return "Pushdown comparisons must reference a direct source member on one side of the comparison.";
+            }
+
+            _ = @operator;
+            return "This comparison shape is not pushdown-eligible.";
+        }
+
+        if (expression == parameter)
+        {
+            return "Whole-row predicates require full materialization and cannot be pushed down.";
+        }
+
+        return "This predicate shape is not pushdown-eligible.";
     }
 
     private static bool TryGetComparisonParts(

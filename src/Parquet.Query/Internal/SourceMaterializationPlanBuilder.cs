@@ -14,13 +14,24 @@ internal static class SourceMaterializationPlanBuilder
         IReadOnlyList<Expression<Func<TSource, bool>>> wherePredicates,
         LambdaExpression? projection)
         where TSource : class, new()
+        => Build(schema, pushdownFilter, wherePredicates, projection, includeDefaultResultPaths: true);
+
+    public static SourceMaterializationPlan<TSource> Build<TSource>(
+        ParquetSchema schema,
+        PushdownFilter<TSource> pushdownFilter,
+        IReadOnlyList<Expression<Func<TSource, bool>>> wherePredicates,
+        LambdaExpression? projection,
+        bool includeDefaultResultPaths)
+        where TSource : class, new()
     {
         ArgumentNullException.ThrowIfNull(schema);
 
         HashSet<string> resultMemberPaths;
         if (projection is null)
         {
-            if (!TryGetDefaultResultMemberPaths(typeof(TSource), out resultMemberPaths))
+            resultMemberPaths = new HashSet<string>(StringComparer.Ordinal);
+            if (includeDefaultResultPaths &&
+                !TryGetDefaultResultMemberPaths(typeof(TSource), out resultMemberPaths))
             {
                 return SourceMaterializationPlan<TSource>.Full;
             }
@@ -66,8 +77,8 @@ internal static class SourceMaterializationPlanBuilder
             }
         }
 
-        var filterBindings = CreateBindings<TSource>(filterMemberPaths);
-        var resultBindings = CreateBindings<TSource>(resultMemberPaths);
+        var filterBindings = CreateBindings<TSource>(schema, filterMemberPaths);
+        var resultBindings = CreateBindings<TSource>(schema, resultMemberPaths);
         if (filterBindings is null || resultBindings is null)
         {
             return SourceMaterializationPlan<TSource>.Full;
@@ -116,7 +127,7 @@ internal static class SourceMaterializationPlanBuilder
         HashSet<string> output,
         HashSet<Type> ancestry)
     {
-        if (IsScalarLike(memberType))
+        if (IsMaterializableLeaf(memberType))
         {
             output.Add(memberPath);
             return true;
@@ -146,13 +157,13 @@ internal static class SourceMaterializationPlanBuilder
         return true;
     }
 
-    private static SourceColumnBinding<TSource>[]? CreateBindings<TSource>(IEnumerable<string> memberPaths)
+    private static SourceColumnBinding<TSource>[]? CreateBindings<TSource>(ParquetSchema schema, IEnumerable<string> memberPaths)
         where TSource : class, new()
     {
         var bindings = new List<SourceColumnBinding<TSource>>();
         foreach (var memberPath in memberPaths.OrderBy(path => path, StringComparer.Ordinal))
         {
-            if (!TryCreateBinding<TSource>(memberPath, out SourceColumnBinding<TSource>? binding))
+            if (!TryCreateBinding<TSource>(schema, memberPath, out SourceColumnBinding<TSource>? binding))
             {
                 return null;
             }
@@ -171,7 +182,7 @@ internal static class SourceMaterializationPlanBuilder
         }
 
         var leafType = GetMemberType(chain[^1]);
-        return IsScalarLike(leafType);
+        return IsPredicateLeaf(leafType);
     }
 
     private static IReadOnlyList<string> ExpandProjectionPath(Type rootType, string memberPath)
@@ -182,7 +193,7 @@ internal static class SourceMaterializationPlanBuilder
         }
 
         var leafType = GetMemberType(chain[^1]);
-        if (IsScalarLike(leafType))
+        if (IsMaterializableLeaf(leafType))
         {
             return new[] { memberPath };
         }
@@ -204,7 +215,7 @@ internal static class SourceMaterializationPlanBuilder
         {
             var childPath = $"{prefix}.{member.Name}";
             var childType = GetMemberType(member);
-            if (IsScalarLike(childType))
+            if (IsMaterializableLeaf(childType))
             {
                 output.Add(childPath);
                 continue;
@@ -220,7 +231,7 @@ internal static class SourceMaterializationPlanBuilder
         }
     }
 
-    private static bool TryCreateBinding<TSource>(string memberPath, out SourceColumnBinding<TSource>? binding)
+    private static bool TryCreateBinding<TSource>(ParquetSchema schema, string memberPath, out SourceColumnBinding<TSource>? binding)
         where TSource : class, new()
     {
         binding = null;
@@ -235,8 +246,61 @@ internal static class SourceMaterializationPlanBuilder
             return false;
         }
 
-        var columnPath = string.Join("/", chain.Select(GetColumnName));
-        binding = new SourceColumnBinding<TSource>(memberPath, columnPath, BuildAssigner<TSource>(chain));
+        if (!TryResolveColumnPath(schema, chain, out string? columnPath))
+        {
+            return false;
+        }
+
+        binding = new SourceColumnBinding<TSource>(
+            memberPath,
+            columnPath!,
+            BuildAssigner<TSource>(chain),
+            BuildReader<TSource>(chain),
+            requiresFullRowRead: TryGetCollectionElementType(GetMemberType(chain[^1]), out _));
+        return true;
+    }
+
+    private static bool TryResolveColumnPath(ParquetSchema schema, IReadOnlyList<MemberInfo> chain, out string? columnPath)
+    {
+        Field? current = schema.Fields
+            .FirstOrDefault(field => string.Equals(field.Name, GetColumnName(chain[0]), StringComparison.Ordinal));
+        if (current is null)
+        {
+            columnPath = null;
+            return false;
+        }
+
+        for (var index = 1; index < chain.Count; index++)
+        {
+            if (current is not StructField structField)
+            {
+                columnPath = null;
+                return false;
+            }
+
+            current = structField.Fields
+                .FirstOrDefault(field => string.Equals(field.Name, GetColumnName(chain[index]), StringComparison.Ordinal));
+            if (current is null)
+            {
+                columnPath = null;
+                return false;
+            }
+        }
+
+        current = current switch
+        {
+            DataField dataField => dataField,
+            ListField listField when listField.Item is DataField itemDataField => itemDataField,
+            _ => null
+        };
+
+        if (current is not DataField resolvedDataField)
+        {
+            columnPath = null;
+            return false;
+        }
+
+        columnPath = resolvedDataField.Path.ToString();
         return true;
     }
 
@@ -266,6 +330,26 @@ internal static class SourceMaterializationPlanBuilder
         };
     }
 
+    private static Func<TSource, object?> BuildReader<TSource>(IReadOnlyList<MemberInfo> chain)
+        where TSource : class, new()
+    {
+        return row =>
+        {
+            object? current = row;
+            foreach (var member in chain)
+            {
+                if (current is null)
+                {
+                    return null;
+                }
+
+                current = GetValue(current, member);
+            }
+
+            return current;
+        };
+    }
+
     private static bool CanAssignChain(IReadOnlyList<MemberInfo> chain)
     {
         for (var index = 0; index < chain.Count; index++)
@@ -291,7 +375,7 @@ internal static class SourceMaterializationPlanBuilder
                     return false;
                 }
             }
-            else if (!IsScalarLike(memberType))
+            else if (!IsMaterializableLeaf(memberType))
             {
                 return false;
             }
@@ -367,7 +451,7 @@ internal static class SourceMaterializationPlanBuilder
                     return;
                 }
 
-                property.SetValue(instance, value);
+                property.SetValue(instance, ConvertAssignedValue(value, property.PropertyType));
                 return;
 
             case FieldInfo field:
@@ -376,7 +460,7 @@ internal static class SourceMaterializationPlanBuilder
                     return;
                 }
 
-                field.SetValue(instance, value);
+                field.SetValue(instance, ConvertAssignedValue(value, field.FieldType));
                 return;
 
             default:
@@ -387,10 +471,11 @@ internal static class SourceMaterializationPlanBuilder
     private static bool CanTraverseComplexType(Type type)
     {
         var underlyingType = Nullable.GetUnderlyingType(type) ?? type;
-        return underlyingType.IsClass && underlyingType != typeof(string);
+        return underlyingType.IsClass &&
+            !IsMaterializableLeaf(underlyingType);
     }
 
-    private static bool IsScalarLike(Type type)
+    private static bool IsPredicateLeaf(Type type)
     {
         var underlyingType = Nullable.GetUnderlyingType(type) ?? type;
         if (underlyingType.IsEnum)
@@ -410,5 +495,112 @@ internal static class SourceMaterializationPlanBuilder
 #endif
             underlyingType == typeof(Guid) ||
             underlyingType == typeof(byte[]);
+    }
+
+    private static bool IsMaterializableLeaf(Type type)
+    {
+        if (IsPredicateLeaf(type))
+        {
+            return true;
+        }
+
+        return TryGetCollectionElementType(type, out Type? elementType) &&
+            elementType is not null &&
+            IsPredicateLeaf(elementType);
+    }
+
+    private static bool TryGetCollectionElementType(Type type, out Type? elementType)
+    {
+        var underlyingType = Nullable.GetUnderlyingType(type) ?? type;
+        if (underlyingType == typeof(string) || underlyingType == typeof(byte[]))
+        {
+            elementType = null;
+            return false;
+        }
+
+        if (underlyingType.IsArray)
+        {
+            elementType = underlyingType.GetElementType();
+            return elementType is not null;
+        }
+
+        var enumerableType = underlyingType.IsGenericType && underlyingType.GetGenericTypeDefinition() == typeof(IEnumerable<>)
+            ? underlyingType
+            : underlyingType.GetInterfaces()
+                .FirstOrDefault(candidate => candidate.IsGenericType && candidate.GetGenericTypeDefinition() == typeof(IEnumerable<>));
+        if (enumerableType is not null)
+        {
+            elementType = enumerableType.GetGenericArguments()[0];
+            return true;
+        }
+
+        elementType = null;
+        return false;
+    }
+
+    private static object? ConvertAssignedValue(object? value, Type targetType)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        var nonNullableType = Nullable.GetUnderlyingType(targetType) ?? targetType;
+        if (nonNullableType.IsInstanceOfType(value))
+        {
+            return value;
+        }
+
+        if (TryGetCollectionElementType(nonNullableType, out Type? elementType) && elementType is not null)
+        {
+            return ConvertCollectionValue(value, nonNullableType, elementType);
+        }
+
+        return PushdownPredicateFactory.ConvertValue(value, nonNullableType);
+    }
+
+    private static object ConvertCollectionValue(object value, Type targetType, Type elementType)
+    {
+        if (value is not System.Collections.IEnumerable enumerable || value is string or byte[])
+        {
+            return value;
+        }
+
+        var convertedItems = new List<object?>();
+        foreach (var item in enumerable)
+        {
+            convertedItems.Add(item is null ? null : PushdownPredicateFactory.ConvertValue(item, elementType));
+        }
+
+        if (targetType.IsArray)
+        {
+            var array = Array.CreateInstance(elementType, convertedItems.Count);
+            for (var index = 0; index < convertedItems.Count; index++)
+            {
+                array.SetValue(convertedItems[index], index);
+            }
+
+            return array;
+        }
+
+        var concreteListType = targetType.IsInterface || targetType.IsAbstract
+            ? typeof(List<>).MakeGenericType(elementType)
+            : targetType;
+        var list = Activator.CreateInstance(concreteListType)
+            ?? throw new InvalidOperationException($"Could not create an instance of '{concreteListType.Name}'.");
+        var addMethod = concreteListType.GetMethod("Add", new[] { elementType });
+        if (addMethod is not null)
+        {
+            foreach (var item in convertedItems)
+            {
+                addMethod.Invoke(list, new[] { item });
+            }
+
+            return list;
+        }
+
+        return convertedItems
+            .Select(item => item is null ? null : PushdownPredicateFactory.ConvertValue(item, elementType))
+            .ToList();
     }
 }

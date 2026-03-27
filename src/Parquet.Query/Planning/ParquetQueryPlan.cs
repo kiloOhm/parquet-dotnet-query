@@ -6,6 +6,7 @@ public sealed class ParquetQueryPlan
         IReadOnlyList<QueryFilePlan> files,
         IReadOnlyList<string> pushdownPredicates,
         IReadOnlyList<string> residualPredicates,
+        IReadOnlyList<string> residualPredicateDiagnostics,
         IReadOnlyList<string> readColumns,
         IReadOnlyList<string> filterColumns,
         IReadOnlyList<string> deferredColumns,
@@ -14,6 +15,7 @@ public sealed class ParquetQueryPlan
         Files = files;
         PushdownPredicates = pushdownPredicates;
         ResidualPredicates = residualPredicates;
+        ResidualPredicateDiagnostics = residualPredicateDiagnostics;
         ReadColumns = readColumns;
         FilterColumns = filterColumns;
         DeferredColumns = deferredColumns;
@@ -27,6 +29,8 @@ public sealed class ParquetQueryPlan
     public IReadOnlyList<string> PushdownPredicates { get; }
 
     public IReadOnlyList<string> ResidualPredicates { get; }
+
+    public IReadOnlyList<string> ResidualPredicateDiagnostics { get; }
 
     public IReadOnlyList<string> ReadColumns { get; }
 
@@ -109,7 +113,7 @@ public sealed class FilePredicateDecision
 
 public sealed class RowGroupPlan
 {
-    public RowGroupPlan(
+    internal RowGroupPlan(
         string filePath,
         int index,
         long rowCount,
@@ -121,7 +125,8 @@ public sealed class RowGroupPlan
         long candidateRowCountUpperBound,
         bool usedFallbackPageIndex,
         string pagePruningSource,
-        string pagePruningReason)
+        string pagePruningReason,
+        IReadOnlyList<RowInterval> candidateIntervals)
     {
         FilePath = filePath;
         Index = index;
@@ -135,6 +140,7 @@ public sealed class RowGroupPlan
         UsedFallbackPageIndex = usedFallbackPageIndex;
         PagePruningSource = pagePruningSource;
         PagePruningReason = pagePruningReason;
+        CandidateIntervals = candidateIntervals;
     }
 
     public string FilePath { get; }
@@ -160,6 +166,8 @@ public sealed class RowGroupPlan
     public string PagePruningSource { get; }
 
     public string PagePruningReason { get; }
+
+    internal IReadOnlyList<RowInterval> CandidateIntervals { get; }
 }
 
 public sealed class RowGroupPredicateDecision
