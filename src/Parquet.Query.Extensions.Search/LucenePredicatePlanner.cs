@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Parquet.Query.Internal;
 using Parquet.Query.Planning;
 using Parquet.Query.Pushdown;
 
@@ -7,6 +8,7 @@ namespace Parquet.Query.Extensions.Search;
 public sealed class LucenePredicatePlanner<T> : IParquetPredicatePlanner<T>
     where T : class, new()
 {
+    private const int MaxCacheEntries = 256;
     private static readonly ConcurrentDictionary<string, CacheEntry> Cache = new(StringComparer.OrdinalIgnoreCase);
 
     public static LucenePredicatePlanner<T> Instance { get; } = new();
@@ -69,17 +71,25 @@ public sealed class LucenePredicatePlanner<T> : IParquetPredicatePlanner<T>
 
         var lastWriteTimeUtc = System.IO.File.GetLastWriteTimeUtc(filePath).Ticks;
         var cacheKey = $"{filePath}\n{metadataKey}";
+        var accessTimeUtc = DateTime.UtcNow.Ticks;
         if (Cache.TryGetValue(cacheKey, out var cached) &&
             cached.LastWriteTimeUtcTicks == lastWriteTimeUtc &&
             string.Equals(cached.Payload, payload, StringComparison.Ordinal))
         {
-            return cached.Index;
+            var refreshed = cached with { LastAccessUtcTicks = accessTimeUtc };
+            BoundedPlannerCache.Set(Cache, cacheKey, refreshed, MaxCacheEntries, static entry => entry.LastAccessUtcTicks);
+            return refreshed.Index;
         }
 
         var index = LuceneFooterIndexStorage.TryDeserialize(payload);
-        Cache[cacheKey] = new CacheEntry(lastWriteTimeUtc, payload, index);
+        BoundedPlannerCache.Set(
+            Cache,
+            cacheKey,
+            new CacheEntry(accessTimeUtc, lastWriteTimeUtc, payload, index),
+            MaxCacheEntries,
+            static entry => entry.LastAccessUtcTicks);
         return index;
     }
 
-    private sealed record CacheEntry(long LastWriteTimeUtcTicks, string Payload, LuceneFooterIndexModel? Index);
+    private sealed record CacheEntry(long LastAccessUtcTicks, long LastWriteTimeUtcTicks, string Payload, LuceneFooterIndexModel? Index);
 }

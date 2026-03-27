@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Parquet.Query.Internal;
 using Parquet.Query.Planning;
 using Parquet.Query.Pushdown;
 
@@ -7,6 +8,7 @@ namespace Parquet.Query.Extensions.Indexing;
 public sealed class FooterIndexPredicatePlanner<T> : IParquetPredicatePlanner<T>
     where T : class, new()
 {
+    private const int MaxCacheEntries = 256;
     private static readonly ConcurrentDictionary<string, CacheEntry<FooterBitmapIndexModel?>> BitmapCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, CacheEntry<FooterHashIndexModel?>> HashCache = new(StringComparer.OrdinalIgnoreCase);
 
@@ -145,17 +147,25 @@ public sealed class FooterIndexPredicatePlanner<T> : IParquetPredicatePlanner<T>
     {
         var lastWriteTimeUtc = System.IO.File.GetLastWriteTimeUtc(filePath).Ticks;
         var cacheKey = $"{filePath}\n{metadataKey}";
+        var accessTimeUtc = DateTime.UtcNow.Ticks;
         if (cache.TryGetValue(cacheKey, out var cached) &&
             cached.LastWriteTimeUtcTicks == lastWriteTimeUtc &&
             string.Equals(cached.Payload, payload, StringComparison.Ordinal))
         {
-            return cached.Index;
+            var refreshed = cached with { LastAccessUtcTicks = accessTimeUtc };
+            BoundedPlannerCache.Set(cache, cacheKey, refreshed, MaxCacheEntries, static entry => entry.LastAccessUtcTicks);
+            return refreshed.Index;
         }
 
         var index = deserialize(payload);
-        cache[cacheKey] = new CacheEntry<TIndex?>(lastWriteTimeUtc, payload, index);
+        BoundedPlannerCache.Set(
+            cache,
+            cacheKey,
+            new CacheEntry<TIndex?>(accessTimeUtc, lastWriteTimeUtc, payload, index),
+            MaxCacheEntries,
+            static entry => entry.LastAccessUtcTicks);
         return index;
     }
 
-    private sealed record CacheEntry<TIndex>(long LastWriteTimeUtcTicks, string Payload, TIndex Index);
+    private sealed record CacheEntry<TIndex>(long LastAccessUtcTicks, long LastWriteTimeUtcTicks, string Payload, TIndex Index);
 }
