@@ -7,16 +7,19 @@ It keeps Parquet-specific optimizations explicit:
 - `Pushdown(...)` for predicates that should participate in parquet pruning
 - `Where(...)` for normal LINQ predicates with residual in-memory evaluation
 - `Select(...)` for projection and column pruning
+- `FromFiles(...)` and `FromDirectory(...)` for dataset-style scans
 - `PlanAsync()` and `ExplainAsync()` for visibility into what was pushed down
 
-The current implementation focuses on row-group pruning plus selective materialization rather than pretending to be a full LINQ provider.
+The current implementation focuses on file pruning, row-group pruning, and selective materialization rather than pretending to be a full LINQ provider.
 
 ## Features
 
 - Explicit pushdown filter DSL
 - Partial extraction from `Where(...)` expressions
 - Statistics-based row-group pruning
+- Partition-aware file pruning for directory layouts like `Country=DE/...`
 - Bloom-filter-aware equality pruning when bloom filters are present
+- Late materialization for projected queries
 - Nested POCO materialization
 - Nested projection with column pruning
 - Residual predicate evaluation for unsupported logic
@@ -50,7 +53,7 @@ Unsupported parts are still evaluated correctly as residual predicates after rea
 using Parquet.Query;
 
 var rows = await ParquetQuery
-    .FromFile<Person>("people.parquet")
+    .FromDirectory<Person>("people")
     .Pushdown(filter => filter
         .Eq(row => row.Country, "DE")
         .Ge(row => row.Age, 18))
@@ -66,9 +69,11 @@ var rows = await ParquetQuery
 
 Semantics:
 
+- dataset queries can skip whole files based on partition values in the path
 - `Pushdown(...)` is parquet-aware and plannable
 - `Where(...)` can contain richer logic, but unsupported parts stay residual
 - `Select(...)` drives projection and can reduce the columns read from the file
+- projected queries can defer non-filter columns until after row filtering
 
 ## Planning And Diagnostics
 
@@ -85,11 +90,12 @@ Console.WriteLine(explanation);
 
 You will see:
 
+- selected files
 - extracted pushdown predicates
 - residual predicates
 - selected row groups
-- read columns
-- whether pruning was based on statistics, bloom filters, or schema fallback
+- filter columns versus deferred columns
+- whether pruning was based on partitions, statistics, bloom filters, or schema fallback
 
 If you want unsupported residual logic to fail fast instead of silently falling back, use:
 
@@ -136,7 +142,7 @@ var rows = await ParquetQuery
 
 - Partial materialization is aimed at nested class graphs with scalar leaves
 - More complex shapes fall back to full source materialization
-- Pushdown planning is row-group oriented today
+- Page-index metadata can be detected, but page-level pruning is not yet wired through the public `kiloOhm.Parquet.Net` reader API
 - This is not a general-purpose `IQueryable` provider
 
 That tradeoff is deliberate: the API stays storage-aware and keeps correctness simple.

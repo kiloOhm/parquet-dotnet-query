@@ -158,9 +158,16 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         var rows = await query.ToListAsync();
 
         Assert.False(plan.RequiresFullMaterialization);
+        Assert.True(plan.UsesLateMaterialization);
         Assert.Equal(
             new[] { "Address/City", "Country", "Id", "Metrics/Score" },
             plan.ReadColumns.OrderBy(column => column, StringComparer.Ordinal).ToArray());
+        Assert.Equal(
+            new[] { "Country", "Metrics/Score" },
+            plan.FilterColumns.OrderBy(column => column, StringComparer.Ordinal).ToArray());
+        Assert.Equal(
+            new[] { "Address/City", "Id" },
+            plan.DeferredColumns.OrderBy(column => column, StringComparer.Ordinal).ToArray());
 
         var row = Assert.Single(rows);
         Assert.Equal(2, row.Id);
@@ -401,6 +408,51 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         var decision = Assert.Single(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions));
         Assert.Equal("schema", decision.Source);
         Assert.True(decision.MayMatch);
+    }
+
+    [Fact]
+    public async Task FromDirectory_prunes_partitioned_files_before_opening_them()
+    {
+        var rootPath = Path.Combine(_tempDirectory, "dataset");
+        var germanyPath = Path.Combine(rootPath, "Country=DE", "de.parquet");
+        var usaPath = Path.Combine(rootPath, "Country=US", "us.parquet");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(germanyPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(usaPath)!);
+
+        await WriteRowsAsync(
+            germanyPath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 },
+                new TestRow { Id = 2, Country = "DE", Name = "bravo", Age = 20 }
+            });
+
+        await WriteRowsAsync(
+            usaPath,
+            new[]
+            {
+                new TestRow { Id = 3, Country = "US", Name = "charlie", Age = 30 },
+                new TestRow { Id = 4, Country = "US", Name = "delta", Age = 40 }
+            });
+
+        var query = ParquetQuery
+            .FromDirectory<TestRow>(rootPath)
+            .Pushdown(filter => filter.Eq(row => row.Country, "DE"));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.Equal(2, plan.Files.Count);
+        Assert.Equal(1, plan.SelectedFileCount);
+
+        var skippedFile = Assert.Single(plan.Files.Where(file => !file.ShouldRead));
+        Assert.Contains("Country=US", skippedFile.FilePath);
+        var partitionDecision = Assert.Single(skippedFile.Decisions);
+        Assert.Equal("partition", partitionDecision.Source);
+        Assert.False(partitionDecision.MayMatch);
+
+        Assert.Equal(new[] { 1, 2 }, rows.Select(row => row.Id).ToArray());
     }
 
     [Fact]

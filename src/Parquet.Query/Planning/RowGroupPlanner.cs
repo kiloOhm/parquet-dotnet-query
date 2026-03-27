@@ -1,4 +1,5 @@
 using Parquet.Data;
+using Parquet.Meta;
 using Parquet.Query.Internal;
 using Parquet.Query.Pushdown;
 using Parquet.Schema;
@@ -7,23 +8,25 @@ namespace Parquet.Query.Planning;
 
 internal static class RowGroupPlanner
 {
-    public static ParquetQueryPlan Build<T>(
+    public static QueryFilePlan BuildFilePlan<T>(
         string filePath,
         ParquetReader reader,
         PushdownFilter<T> pushdownFilter,
-        IReadOnlyList<string> residualPredicates,
-        SourceMaterializationPlan<T> materializationPlan)
+        IReadOnlyList<FilePredicateDecision> fileDecisions)
         where T : class, new()
     {
         var dataFields = reader.Schema.GetDataFields()
             .ToDictionary(field => field.Path.ToString(), StringComparer.Ordinal);
 
         var rowGroups = new List<RowGroupPlan>(reader.RowGroupCount);
+        var anyPageIndex = false;
         for (var rowGroupIndex = 0; rowGroupIndex < reader.RowGroupCount; rowGroupIndex++)
         {
             using var rowGroupReader = reader.OpenRowGroupReader(rowGroupIndex);
             var decisions = new List<RowGroupPredicateDecision>(pushdownFilter.Predicates.Count);
             var shouldRead = true;
+            var pageIndexAvailable = HasPageIndex(rowGroupReader, dataFields.Values);
+            anyPageIndex |= pageIndexAvailable;
 
             foreach (var predicate in pushdownFilter.Predicates)
             {
@@ -36,18 +39,52 @@ internal static class RowGroupPlanner
                 }
             }
 
-            rowGroups.Add(new RowGroupPlan(rowGroupIndex, rowGroupReader.RowCount, shouldRead, decisions));
+            rowGroups.Add(new RowGroupPlan(filePath, rowGroupIndex, rowGroupReader.RowCount, shouldRead, pageIndexAvailable, decisions));
         }
 
-        return new ParquetQueryPlan(
+        var fileShouldRead = fileDecisions.All(decision => decision.MayMatch) && rowGroups.Any(rowGroup => rowGroup.ShouldRead);
+        var reason = !fileDecisions.All(decision => decision.MayMatch)
+            ? "Path partitions ruled the file out."
+            : rowGroups.Any(rowGroup => rowGroup.ShouldRead)
+                ? "At least one row group may match."
+                : "All row groups were ruled out by metadata.";
+
+        return new QueryFilePlan(
             filePath,
-            pushdownFilter.Predicates.Select(predicate => predicate.Description).ToArray(),
-            residualPredicates,
-            materializationPlan.RequiresFullMaterialization
-                ? reader.Schema.GetDataFields().Select(field => field.Path.ToString()).ToArray()
-                : materializationPlan.RequiredColumnPaths,
-            materializationPlan.RequiresFullMaterialization,
-            rowGroups);
+            fileShouldRead,
+            reason,
+            fileDecisions,
+            rowGroups,
+            anyPageIndex);
+    }
+
+    private static bool HasPageIndex(IParquetRowGroupReader rowGroupReader, IEnumerable<DataField> fields)
+    {
+        foreach (var field in fields)
+        {
+            if (!rowGroupReader.ColumnExists(field))
+            {
+                continue;
+            }
+
+            ColumnChunk? metadata = rowGroupReader.GetMetadata(field);
+            if (metadata is null)
+            {
+                continue;
+            }
+
+            if (metadata.ColumnIndexOffset.HasValue &&
+                metadata.ColumnIndexLength.HasValue &&
+                metadata.OffsetIndexOffset.HasValue &&
+                metadata.OffsetIndexLength.HasValue &&
+                metadata.ColumnIndexLength.Value > 0 &&
+                metadata.OffsetIndexLength.Value > 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static RowGroupPredicateDecision EvaluatePredicate<T>(

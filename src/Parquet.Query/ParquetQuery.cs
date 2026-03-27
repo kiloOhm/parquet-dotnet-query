@@ -14,13 +14,25 @@ public static class ParquetQuery
 {
     public static ParquetQuery<T, T> FromFile<T>(string filePath, ParquetOptions? parquetOptions = null)
         where T : class, new()
-        => ParquetQuery<T, T>.FromFile(filePath, parquetOptions);
+        => ParquetQuery<T, T>.FromFiles(new[] { filePath }, parquetOptions);
+
+    public static ParquetQuery<T, T> FromFiles<T>(IEnumerable<string> filePaths, ParquetOptions? parquetOptions = null)
+        where T : class, new()
+        => ParquetQuery<T, T>.FromFiles(filePaths, parquetOptions);
+
+    public static ParquetQuery<T, T> FromDirectory<T>(
+        string directoryPath,
+        string searchPattern = "*.parquet",
+        SearchOption searchOption = SearchOption.AllDirectories,
+        ParquetOptions? parquetOptions = null)
+        where T : class, new()
+        => ParquetQuery<T, T>.FromFiles(Directory.EnumerateFiles(directoryPath, searchPattern, searchOption), parquetOptions);
 }
 
 public sealed class ParquetQuery<TSource, TResult>
     where TSource : class, new()
 {
-    private readonly string _filePath;
+    private readonly IReadOnlyList<string> _filePaths;
     private readonly ParquetOptions? _parquetOptions;
     private readonly PushdownFilter<TSource> _pushdownFilter;
     private readonly IReadOnlyList<Expression<Func<TSource, bool>>> _wherePredicates;
@@ -29,7 +41,7 @@ public sealed class ParquetQuery<TSource, TResult>
     private readonly bool _strictPushdown;
 
     private ParquetQuery(
-        string filePath,
+        IReadOnlyList<string> filePaths,
         ParquetOptions? parquetOptions,
         PushdownFilter<TSource> pushdownFilter,
         IReadOnlyList<Expression<Func<TSource, bool>>> wherePredicates,
@@ -37,7 +49,7 @@ public sealed class ParquetQuery<TSource, TResult>
         Expression<Func<TSource, TResult>>? projection,
         bool strictPushdown)
     {
-        _filePath = filePath;
+        _filePaths = filePaths;
         _parquetOptions = parquetOptions;
         _pushdownFilter = pushdownFilter;
         _wherePredicates = wherePredicates;
@@ -46,12 +58,24 @@ public sealed class ParquetQuery<TSource, TResult>
         _strictPushdown = strictPushdown;
     }
 
-    public static ParquetQuery<TSource, TResult> FromFile(string filePath, ParquetOptions? parquetOptions = null)
+    public static ParquetQuery<TSource, TResult> FromFiles(IEnumerable<string> filePaths, ParquetOptions? parquetOptions = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        ArgumentNullException.ThrowIfNull(filePaths);
+
+        var normalizedFilePaths = filePaths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => Path.GetFullPath(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (normalizedFilePaths.Length == 0)
+        {
+            throw new ArgumentException("At least one parquet file must be provided.", nameof(filePaths));
+        }
 
         return new ParquetQuery<TSource, TResult>(
-            filePath,
+            normalizedFilePaths,
             parquetOptions,
             PushdownFilter<TSource>.Empty,
             Array.Empty<Expression<Func<TSource, bool>>>(),
@@ -65,7 +89,7 @@ public sealed class ParquetQuery<TSource, TResult>
         ArgumentNullException.ThrowIfNull(filter);
 
         return new ParquetQuery<TSource, TResult>(
-            _filePath,
+            _filePaths,
             _parquetOptions,
             _pushdownFilter.And(filter),
             _wherePredicates,
@@ -84,7 +108,7 @@ public sealed class ParquetQuery<TSource, TResult>
         var split = PredicatePushdownExtractor.Extract(predicate);
 
         return new ParquetQuery<TSource, TResult>(
-            _filePath,
+            _filePaths,
             _parquetOptions,
             _pushdownFilter.And(split.PushdownFilter),
             new ReadOnlyCollection<Expression<Func<TSource, bool>>>(_wherePredicates.Concat(new[] { predicate }).ToArray()),
@@ -98,7 +122,7 @@ public sealed class ParquetQuery<TSource, TResult>
         ArgumentNullException.ThrowIfNull(projection);
 
         return new ParquetQuery<TSource, TNextResult>(
-            _filePath,
+            _filePaths,
             _parquetOptions,
             _pushdownFilter,
             _wherePredicates,
@@ -109,7 +133,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
     public ParquetQuery<TSource, TResult> StrictPushdown(bool enabled = true) =>
         new(
-            _filePath,
+            _filePaths,
             _parquetOptions,
             _pushdownFilter,
             _wherePredicates,
@@ -122,7 +146,7 @@ public sealed class ParquetQuery<TSource, TResult>
         ArgumentNullException.ThrowIfNull(parquetOptions);
 
         return new ParquetQuery<TSource, TResult>(
-            _filePath,
+            _filePaths,
             ParquetOptionsFactory.Clone(parquetOptions),
             _pushdownFilter,
             _wherePredicates,
@@ -174,10 +198,46 @@ public sealed class ParquetQuery<TSource, TResult>
     {
         EnsureStrictPushdown();
 
-        await using var stream = System.IO.File.OpenRead(_filePath);
-        using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
-        var materializationPlan = CreateMaterializationPlan(reader.Schema);
-        return RowGroupPlanner.Build(_filePath, reader, _pushdownFilter, _residualPredicates, materializationPlan);
+        var filePlans = new List<QueryFilePlan>(_filePaths.Count);
+        var readColumns = new HashSet<string>(StringComparer.Ordinal);
+        var filterColumns = new HashSet<string>(StringComparer.Ordinal);
+        var deferredColumns = new HashSet<string>(StringComparer.Ordinal);
+        var requiresFullMaterialization = false;
+
+        foreach (var filePath in _filePaths)
+        {
+            var fileDecisions = PartitionPruner.Evaluate(filePath, _pushdownFilter.Predicates);
+            if (fileDecisions.Any(decision => !decision.MayMatch))
+            {
+                filePlans.Add(new QueryFilePlan(
+                    filePath,
+                    shouldRead: false,
+                    reason: "Path partitions ruled the file out.",
+                    decisions: fileDecisions,
+                    rowGroups: Array.Empty<RowGroupPlan>(),
+                    pageIndexAvailable: false));
+                continue;
+            }
+
+            await using var stream = System.IO.File.OpenRead(filePath);
+            using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
+            var materializationPlan = CreateMaterializationPlan(reader.Schema);
+            requiresFullMaterialization |= materializationPlan.RequiresFullMaterialization;
+            readColumns.UnionWith(materializationPlan.RequiredColumnPaths);
+            filterColumns.UnionWith(materializationPlan.FilterColumnPaths);
+            deferredColumns.UnionWith(materializationPlan.DeferredColumnPaths);
+
+            filePlans.Add(RowGroupPlanner.BuildFilePlan(filePath, reader, _pushdownFilter, fileDecisions));
+        }
+
+        return new ParquetQueryPlan(
+            filePlans,
+            _pushdownFilter.Predicates.Select(predicate => predicate.Description).ToArray(),
+            _residualPredicates,
+            readColumns.OrderBy(column => column, StringComparer.Ordinal).ToArray(),
+            filterColumns.OrderBy(column => column, StringComparer.Ordinal).ToArray(),
+            deferredColumns.OrderBy(column => column, StringComparer.Ordinal).ToArray(),
+            requiresFullMaterialization);
     }
 
     public async Task<string> ExplainAsync(CancellationToken cancellationToken = default)
@@ -185,7 +245,9 @@ public sealed class ParquetQuery<TSource, TResult>
         var plan = await PlanAsync(cancellationToken);
         var builder = new StringBuilder();
 
-        builder.AppendLine($"File: {plan.FilePath}");
+        builder.AppendLine(plan.Files.Count == 1
+            ? $"File: {plan.Files[0].FilePath}"
+            : $"Files: {plan.SelectedFileCount}/{plan.Files.Count} selected");
         builder.AppendLine(plan.PushdownPredicates.Count == 0
             ? "Pushdown: none"
             : $"Pushdown: {string.Join(", ", plan.PushdownPredicates)}");
@@ -195,14 +257,40 @@ public sealed class ParquetQuery<TSource, TResult>
         builder.AppendLine(plan.RequiresFullMaterialization
             ? "Read Columns: all"
             : $"Read Columns: {string.Join(", ", plan.ReadColumns)}");
-        builder.AppendLine($"Row groups selected: {plan.SelectedRowGroupCount}/{plan.RowGroups.Count}");
-
-        foreach (var rowGroup in plan.RowGroups)
+        if (!plan.RequiresFullMaterialization)
         {
-            builder.AppendLine($"  RG {rowGroup.Index}: {(rowGroup.ShouldRead ? "read" : "skip")} ({rowGroup.RowCount} rows)");
-            foreach (var decision in rowGroup.Decisions)
+            builder.AppendLine(plan.FilterColumns.Count == 0
+                ? "Filter Columns: none"
+                : $"Filter Columns: {string.Join(", ", plan.FilterColumns)}");
+            builder.AppendLine(plan.DeferredColumns.Count == 0
+                ? "Deferred Columns: none"
+                : $"Deferred Columns: {string.Join(", ", plan.DeferredColumns)}");
+        }
+
+        builder.AppendLine(plan.UsesLateMaterialization
+            ? "Late Materialization: enabled"
+            : "Late Materialization: not needed");
+
+        if (plan.PageIndexAvailable)
+        {
+            builder.AppendLine("Page Indexes: metadata detected, but page-level pruning is not yet wired through the public reader API.");
+        }
+
+        foreach (var file in plan.Files)
+        {
+            builder.AppendLine($"File {file.FilePath}: {(file.ShouldRead ? "read" : "skip")} ({file.Reason})");
+            foreach (var decision in file.Decisions)
             {
-                builder.AppendLine($"    {decision.Predicate}: {(decision.MayMatch ? "may match" : "ruled out")} via {decision.Source} ({decision.Reason})");
+                builder.AppendLine($"  Partition {decision.Predicate}: {(decision.MayMatch ? "may match" : "ruled out")} via {decision.Source} ({decision.Reason})");
+            }
+
+            foreach (var rowGroup in file.RowGroups)
+            {
+                builder.AppendLine($"  RG {rowGroup.Index}: {(rowGroup.ShouldRead ? "read" : "skip")} ({rowGroup.RowCount} rows)");
+                foreach (var decision in rowGroup.Decisions)
+                {
+                    builder.AppendLine($"    {decision.Predicate}: {(decision.MayMatch ? "may match" : "ruled out")} via {decision.Source} ({decision.Reason})");
+                }
             }
         }
 
@@ -217,27 +305,70 @@ public sealed class ParquetQuery<TSource, TResult>
         var projector = BuildProjector();
         var results = new List<TResult>();
 
-        await using var stream = System.IO.File.OpenRead(_filePath);
-        using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
-        var materializationPlan = CreateMaterializationPlan(reader.Schema);
-        var serializerOptions = CreateSerializerOptions();
-        var plan = RowGroupPlanner.Build(_filePath, reader, _pushdownFilter, _residualPredicates, materializationPlan);
-
-        foreach (var rowGroup in plan.RowGroups.Where(rowGroup => rowGroup.ShouldRead))
+        foreach (var filePath in _filePaths)
         {
-            var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
-                _filePath,
-                reader,
-                rowGroup.Index,
-                materializationPlan,
-                serializerOptions,
-                cancellationToken);
-
-            foreach (var row in batch)
+            var fileDecisions = PartitionPruner.Evaluate(filePath, _pushdownFilter.Predicates);
+            if (fileDecisions.Any(decision => !decision.MayMatch))
             {
-                if (rowFilter(row))
+                continue;
+            }
+
+            await using var stream = System.IO.File.OpenRead(filePath);
+            using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
+            var materializationPlan = CreateMaterializationPlan(reader.Schema);
+            var serializerOptions = CreateSerializerOptions();
+            var filePlan = RowGroupPlanner.BuildFilePlan(filePath, reader, _pushdownFilter, fileDecisions);
+            if (!filePlan.ShouldRead)
+            {
+                continue;
+            }
+
+            foreach (var rowGroup in filePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead))
+            {
+                if (materializationPlan.RequiresFullMaterialization)
                 {
-                    results.Add(projector(row));
+                    var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
+                        filePath,
+                        reader,
+                        rowGroup.Index,
+                        materializationPlan,
+                        serializerOptions,
+                        cancellationToken);
+
+                    foreach (var row in batch)
+                    {
+                        if (rowFilter(row))
+                        {
+                            results.Add(projector(row));
+                        }
+                    }
+
+                    continue;
+                }
+
+                var rows = await PartialRowMaterializer<TSource>.ReadFilterRowsAsync(
+                    reader,
+                    rowGroup.Index,
+                    materializationPlan,
+                    cancellationToken);
+
+                var selectedIndexes = SelectMatchingIndexes(rows, rowFilter);
+                if (selectedIndexes.Count == 0)
+                {
+                    continue;
+                }
+
+                await PartialRowMaterializer<TSource>.PopulateDeferredColumnsAsync(
+                    reader,
+                    rowGroup.Index,
+                    materializationPlan,
+                    rows,
+                    selectedIndexes,
+                    cancellationToken);
+
+                foreach (var selectedIndex in selectedIndexes)
+                {
+                    results.Add(projector(rows[selectedIndex]));
                 }
             }
         }
@@ -252,27 +383,70 @@ public sealed class ParquetQuery<TSource, TResult>
         var rowFilter = BuildRowFilter();
         var projector = BuildProjector();
 
-        await using var stream = System.IO.File.OpenRead(_filePath);
-        using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
-        var materializationPlan = CreateMaterializationPlan(reader.Schema);
-        var serializerOptions = CreateSerializerOptions();
-        var plan = RowGroupPlanner.Build(_filePath, reader, _pushdownFilter, _residualPredicates, materializationPlan);
-
-        foreach (var rowGroup in plan.RowGroups.Where(rowGroup => rowGroup.ShouldRead))
+        foreach (var filePath in _filePaths)
         {
-            var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
-                _filePath,
-                reader,
-                rowGroup.Index,
-                materializationPlan,
-                serializerOptions,
-                cancellationToken);
-
-            foreach (var row in batch)
+            var fileDecisions = PartitionPruner.Evaluate(filePath, _pushdownFilter.Predicates);
+            if (fileDecisions.Any(decision => !decision.MayMatch))
             {
-                if (rowFilter(row))
+                continue;
+            }
+
+            await using var stream = System.IO.File.OpenRead(filePath);
+            using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
+            var materializationPlan = CreateMaterializationPlan(reader.Schema);
+            var serializerOptions = CreateSerializerOptions();
+            var filePlan = RowGroupPlanner.BuildFilePlan(filePath, reader, _pushdownFilter, fileDecisions);
+            if (!filePlan.ShouldRead)
+            {
+                continue;
+            }
+
+            foreach (var rowGroup in filePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead))
+            {
+                if (materializationPlan.RequiresFullMaterialization)
                 {
-                    yield return projector(row);
+                    var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
+                        filePath,
+                        reader,
+                        rowGroup.Index,
+                        materializationPlan,
+                        serializerOptions,
+                        cancellationToken);
+
+                    foreach (var row in batch)
+                    {
+                        if (rowFilter(row))
+                        {
+                            yield return projector(row);
+                        }
+                    }
+
+                    continue;
+                }
+
+                var rows = await PartialRowMaterializer<TSource>.ReadFilterRowsAsync(
+                    reader,
+                    rowGroup.Index,
+                    materializationPlan,
+                    cancellationToken);
+
+                var selectedIndexes = SelectMatchingIndexes(rows, rowFilter);
+                if (selectedIndexes.Count == 0)
+                {
+                    continue;
+                }
+
+                await PartialRowMaterializer<TSource>.PopulateDeferredColumnsAsync(
+                    reader,
+                    rowGroup.Index,
+                    materializationPlan,
+                    rows,
+                    selectedIndexes,
+                    cancellationToken);
+
+                foreach (var selectedIndex in selectedIndexes)
+                {
+                    yield return projector(rows[selectedIndex]);
                 }
             }
         }
@@ -304,6 +478,22 @@ public sealed class ParquetQuery<TSource, TResult>
         }
 
         return static row => (TResult)(object)row;
+    }
+
+    private static IReadOnlyList<int> SelectMatchingIndexes(
+        IReadOnlyList<TSource> rows,
+        Func<TSource, bool> rowFilter)
+    {
+        var selectedIndexes = new List<int>(rows.Count);
+        for (var index = 0; index < rows.Count; index++)
+        {
+            if (rowFilter(rows[index]))
+            {
+                selectedIndexes.Add(index);
+            }
+        }
+
+        return selectedIndexes;
     }
 
     private ParquetSerializerOptions? CreateSerializerOptions() =>

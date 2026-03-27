@@ -28,7 +28,9 @@ internal static class SourceMaterializationPlanBuilder
             return SourceMaterializationPlan<TSource>.Full;
         }
 
-        var memberPaths = new HashSet<string>(pushdownFilter.Predicates.Select(predicate => predicate.MemberPath), StringComparer.Ordinal);
+        var filterMemberPaths = new HashSet<string>(
+            pushdownFilter.Predicates.Select(predicate => predicate.MemberPath),
+            StringComparer.Ordinal);
 
         foreach (var predicate in wherePredicates)
         {
@@ -45,33 +47,63 @@ internal static class SourceMaterializationPlanBuilder
                     return SourceMaterializationPlan<TSource>.Full;
                 }
 
-                memberPaths.Add(memberPath);
+                filterMemberPaths.Add(memberPath);
             }
         }
 
+        var resultMemberPaths = new HashSet<string>(StringComparer.Ordinal);
         foreach (var memberPath in projectionAnalysis.MemberPaths)
         {
             foreach (var expandedPath in ExpandProjectionPath(typeof(TSource), memberPath))
             {
-                memberPaths.Add(expandedPath);
+                resultMemberPaths.Add(expandedPath);
             }
         }
 
+        var filterBindings = CreateBindings<TSource>(filterMemberPaths);
+        var resultBindings = CreateBindings<TSource>(resultMemberPaths);
+        if (filterBindings is null || resultBindings is null)
+        {
+            return SourceMaterializationPlan<TSource>.Full;
+        }
+
+        var deferredBindings = resultBindings
+            .Where(binding => filterBindings.All(filterBinding => !string.Equals(filterBinding.MemberPath, binding.MemberPath, StringComparison.Ordinal)))
+            .ToArray();
+
+        var requiredColumnPaths = filterBindings
+            .Concat(resultBindings)
+            .Select(binding => binding.ColumnPath)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+
+        return new SourceMaterializationPlan<TSource>(
+            requiresFullMaterialization: false,
+            new ReadOnlyCollection<SourceColumnBinding<TSource>>(filterBindings),
+            new ReadOnlyCollection<SourceColumnBinding<TSource>>(resultBindings),
+            new ReadOnlyCollection<SourceColumnBinding<TSource>>(deferredBindings),
+            new ReadOnlyCollection<string>(filterBindings.Select(binding => binding.ColumnPath).Distinct(StringComparer.Ordinal).OrderBy(path => path, StringComparer.Ordinal).ToArray()),
+            new ReadOnlyCollection<string>(resultBindings.Select(binding => binding.ColumnPath).Distinct(StringComparer.Ordinal).OrderBy(path => path, StringComparer.Ordinal).ToArray()),
+            new ReadOnlyCollection<string>(deferredBindings.Select(binding => binding.ColumnPath).Distinct(StringComparer.Ordinal).OrderBy(path => path, StringComparer.Ordinal).ToArray()),
+            new ReadOnlyCollection<string>(requiredColumnPaths));
+    }
+
+    private static SourceColumnBinding<TSource>[]? CreateBindings<TSource>(IEnumerable<string> memberPaths)
+        where TSource : class, new()
+    {
         var bindings = new List<SourceColumnBinding<TSource>>();
         foreach (var memberPath in memberPaths.OrderBy(path => path, StringComparer.Ordinal))
         {
             if (!TryCreateBinding<TSource>(memberPath, out SourceColumnBinding<TSource>? binding))
             {
-                return SourceMaterializationPlan<TSource>.Full;
+                return null;
             }
 
             bindings.Add(binding!);
         }
 
-        return new SourceMaterializationPlan<TSource>(
-            requiresFullMaterialization: false,
-            new ReadOnlyCollection<SourceColumnBinding<TSource>>(bindings),
-            new ReadOnlyCollection<string>(bindings.Select(binding => binding.ColumnPath).Distinct(StringComparer.Ordinal).ToArray()));
+        return bindings.ToArray();
     }
 
     private static bool CanMaterializeForPredicate(Type rootType, string memberPath)
