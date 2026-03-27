@@ -127,6 +127,12 @@ The repository now includes a search-focused extension project at `src/Parquet.Q
 - footer-resident analyzed term dictionaries per row group
 - `LuceneMatch(...)` and `LuceneFuzzy(...)` query extensions backed by custom predicate planning
 
+It also now includes an indexing-focused extension project at `src/Parquet.Query.Extensions.Indexing` with:
+
+- a `FooterHashIndexingStrategy` for `[ParquetExternalIndex("footer-hash")]` string lookup columns
+- a `FooterBitmapIndexingStrategy` for `[ParquetExternalIndex("footer-bitmap")]` low-cardinality equality columns
+- `WithFooterIndexes()` query extensions backed by footer-aware equality pruning
+
 ## Encryption Support
 
 The query layer forwards `ParquetOptions` and exposes convenience methods for common encrypted-read scenarios:
