@@ -1,4 +1,5 @@
 using Parquet.Query.Extensions.Indexing;
+using Parquet.Query.Internal;
 using Parquet.Query.Extensions.Writing;
 using Parquet.Query.Extensions.Writing.Attributes;
 using Parquet.Serialization;
@@ -204,42 +205,7 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
     }
 
     private static async Task SetFileMetadataAsync(string filePath, IReadOnlyDictionary<string, string> metadata)
-    {
-        var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
-
-        using var input = new MemoryStream(fileBytes, writable: false);
-        using var reader = await Parquet.ParquetReader.CreateAsync(input);
-
-        var footerMetadata = reader.Metadata!;
-        footerMetadata.KeyValueMetadata = reader.CustomMetadata
-            .Concat(metadata)
-            .GroupBy(entry => entry.Key, StringComparer.Ordinal)
-            .Select(group => new Parquet.Meta.KeyValue { Key = group.Key, Value = group.Last().Value })
-            .ToList();
-
-        var originalFooterLength = BitConverter.ToInt32(fileBytes, fileBytes.Length - 8);
-        var footerStart = fileBytes.Length - 8 - originalFooterLength;
-
-        using var output = new MemoryStream();
-        await output.WriteAsync(fileBytes.AsMemory(0, footerStart));
-
-        var footerType = typeof(Parquet.ParquetReader).Assembly.GetType("Parquet.File.ThriftFooter", throwOnError: true)
-            ?? throw new InvalidOperationException("Parquet.File.ThriftFooter could not be loaded.");
-        var footer = Activator.CreateInstance(footerType, footerMetadata)
-            ?? throw new InvalidOperationException("Parquet.File.ThriftFooter could not be created.");
-        var writeMethod = footerType.GetMethod(
-            "Write",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic,
-            binder: null,
-            types: new[] { typeof(Stream) },
-            modifiers: null)
-            ?? throw new InvalidOperationException("Parquet.File.ThriftFooter.Write(Stream) could not be found.");
-        var newFooterLength = checked(Convert.ToInt32(writeMethod.Invoke(footer, new object[] { output })));
-        await output.WriteAsync(BitConverter.GetBytes(newFooterLength));
-        await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PAR1"));
-
-        await System.IO.File.WriteAllBytesAsync(filePath, output.ToArray());
-    }
+        => await ParquetFooterMetadata.WriteAsync(filePath, metadata);
 
     private sealed class FooterHashRow
     {
