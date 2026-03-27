@@ -1,6 +1,8 @@
 using System.Linq.Expressions;
 using Parquet.Query.Internal;
 
+using System.Globalization;
+
 namespace Parquet.Query.Pushdown;
 
 internal static class PushdownPredicateFactory
@@ -67,6 +69,11 @@ internal static class PushdownPredicateFactory
                 : Enum.ToObject(targetType, value);
         }
 
+        if (TryConvertPrimitive(value, targetType, out var converted))
+        {
+            return converted;
+        }
+
         return Convert.ChangeType(value, targetType);
     }
 
@@ -78,6 +85,37 @@ internal static class PushdownPredicateFactory
             DateTime dateTime => dateTime.ToString("O"),
             _ => value.ToString() ?? string.Empty
         };
+
+    private static bool TryConvertPrimitive(object value, Type targetType, out object? converted)
+    {
+        converted = null;
+        if (value is not IConvertible convertible)
+        {
+            return false;
+        }
+
+        converted = Type.GetTypeCode(targetType) switch
+        {
+            TypeCode.Boolean => convertible.ToBoolean(CultureInfo.InvariantCulture),
+            TypeCode.Byte => convertible.ToByte(CultureInfo.InvariantCulture),
+            TypeCode.Char => convertible.ToChar(CultureInfo.InvariantCulture),
+            TypeCode.DateTime => convertible.ToDateTime(CultureInfo.InvariantCulture),
+            TypeCode.Decimal => convertible.ToDecimal(CultureInfo.InvariantCulture),
+            TypeCode.Double => convertible.ToDouble(CultureInfo.InvariantCulture),
+            TypeCode.Int16 => convertible.ToInt16(CultureInfo.InvariantCulture),
+            TypeCode.Int32 => convertible.ToInt32(CultureInfo.InvariantCulture),
+            TypeCode.Int64 => convertible.ToInt64(CultureInfo.InvariantCulture),
+            TypeCode.SByte => convertible.ToSByte(CultureInfo.InvariantCulture),
+            TypeCode.Single => convertible.ToSingle(CultureInfo.InvariantCulture),
+            TypeCode.String => convertible.ToString(CultureInfo.InvariantCulture),
+            TypeCode.UInt16 => convertible.ToUInt16(CultureInfo.InvariantCulture),
+            TypeCode.UInt32 => convertible.ToUInt32(CultureInfo.InvariantCulture),
+            TypeCode.UInt64 => convertible.ToUInt64(CultureInfo.InvariantCulture),
+            _ => null
+        };
+
+        return converted is not null || targetType == typeof(string);
+    }
 
     private static Func<T, bool> CompileComparison<T>(
         LambdaExpression selector,
