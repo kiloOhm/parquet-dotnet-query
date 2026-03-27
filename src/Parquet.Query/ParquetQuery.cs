@@ -38,6 +38,7 @@ public sealed class ParquetQuery<TSource, TResult>
     private readonly PushdownFilter<TSource> _pushdownFilter;
     private readonly IReadOnlyList<IParquetPredicatePlanner<TSource>> _predicatePlanners;
     private readonly IReadOnlyList<Expression<Func<TSource, bool>>> _wherePredicates;
+    private readonly Lazy<Func<TSource, bool>[]> _compiledWherePredicates;
     private readonly IReadOnlyList<PredicatePushdownDiagnostic> _residualPredicates;
     private readonly Expression<Func<TSource, TResult>>? _projection;
     private readonly bool _strictPushdown;
@@ -57,6 +58,9 @@ public sealed class ParquetQuery<TSource, TResult>
         _pushdownFilter = pushdownFilter;
         _predicatePlanners = predicatePlanners;
         _wherePredicates = wherePredicates;
+        _compiledWherePredicates = new Lazy<Func<TSource, bool>[]>(
+            () => _wherePredicates.Select(predicate => predicate.Compile()).ToArray(),
+            isThreadSafe: true);
         _residualPredicates = residualPredicates;
         _projection = projection;
         _strictPushdown = strictPushdown;
@@ -795,7 +799,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
     private Func<TSource, bool> BuildRowFilter()
     {
-        var whereDelegates = _wherePredicates.Select(predicate => predicate.Compile()).ToArray();
+        var whereDelegates = _compiledWherePredicates.Value;
         if (_pushdownFilter.IsEmpty && whereDelegates.Length == 0)
         {
             return static _ => true;
