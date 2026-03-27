@@ -230,7 +230,15 @@ internal static class PagePruner
             return Array.Empty<int>();
         }
 
-        var indexes = new List<int>(rowCount);
+        var capacity = 0;
+        foreach (var interval in intervals)
+        {
+            var start = (int)Math.Max(0, interval.Start);
+            var end = (int)Math.Min(rowCount, interval.End);
+            capacity = checked(capacity + Math.Max(0, end - start));
+        }
+
+        var indexes = new List<int>(capacity);
         foreach (var interval in intervals)
         {
             var start = (int)Math.Max(0, interval.Start);
