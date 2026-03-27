@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Company>kiloOhm</Company>
+    <PackageId>kiloOhm.Parquet.Net.Query.Extensions.Search</PackageId>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\Parquet.Query.Extensions.Search.xml</DocumentationFile>
+    <DebugType>full</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <PackageTags>apache parquet dotnet net c# query search lucene fuzzy footer-index</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <Authors>Lukas Wicke (@kiloOhm)</Authors>
+    <Product>parquet-dotnet-query</Product>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/kiloOhm/parquet-dotnet-query</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/kiloOhm/parquet-dotnet-query</RepositoryUrl>
+    <RepositoryType>GitHub</RepositoryType>
+    <PackageIcon>icon.png</PackageIcon>
+    <Description>Search extensions for parquet-dotnet-query, including Lucene-style token matching, fuzzy predicates, and footer-backed text indexes.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <AllowedOutputExtensionsInPackageBuildOutputFolder>$(AllowedOutputExtensionsInPackageBuildOutputFolder);.pdb</AllowedOutputExtensionsInPackageBuildOutputFolder>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(Configuration)' == 'Release'">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.0.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj') and '$(Configuration)' != 'Release'">
+    <ProjectReference Include="..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="!Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj') or '$(Configuration)' == 'Release'">
+    <PackageReference Include="kiloOhm.Parquet.Net" Version="5.6.0-pre.3--kiloOhm.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Parquet.Query\Parquet.Query.csproj" />
+    <ProjectReference Include="..\Parquet.Query.Extensions.Writing\Parquet.Query.Extensions.Writing.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md">
+      <Pack>true</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Include="..\icon.png">
+      <Pack>true</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+
+</Project>

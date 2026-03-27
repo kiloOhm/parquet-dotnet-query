@@ -121,6 +121,12 @@ Custom pushdown predicates can be added without forking the core query engine:
 
 This lets extension packages use footer metadata, sidecar indexes, or custom row-group/page pruning logic while keeping residual row-level verification in the main query pipeline.
 
+The repository now includes a search-focused extension project at `src/Parquet.Query.Extensions.Search` with:
+
+- a `LuceneFooterIndexingStrategy` for `[ParquetExternalIndex("lucene")]` string columns
+- footer-resident analyzed term dictionaries per row group
+- `LuceneMatch(...)` and `LuceneFuzzy(...)` query extensions backed by custom predicate planning
+
 ## Encryption Support
 
 The query layer forwards `ParquetOptions` and exposes convenience methods for common encrypted-read scenarios:
