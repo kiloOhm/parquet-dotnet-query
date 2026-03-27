@@ -245,7 +245,7 @@ public static class ParquetWritePlanBuilder
                     memberPath,
                     columnPath,
                     strategyName: null,
-                    order: sortKey.Order,
+                    order: sortKey.Priority,
                     direction: sortKey.Direction));
             }
 

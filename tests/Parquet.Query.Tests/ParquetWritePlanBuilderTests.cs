@@ -163,7 +163,7 @@ public sealed class ParquetWritePlanBuilderTests : IAsyncLifetime
         public string EventName { get; set; } = string.Empty;
 
         [ParquetTimestamp(ParquetTimestampResolution.Microseconds)]
-        [ParquetSortKey(1, Direction = ParquetSortDirection.Descending)]
+        [ParquetSortKey(priority: 1, Direction = ParquetSortDirection.Descending)]
         public DateTime CreatedAt { get; set; }
 
         [ParquetDecimal(20, 4)]

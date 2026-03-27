@@ -3,12 +3,14 @@ namespace Parquet.Query.Extensions.Writing.Attributes;
 [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field, AllowMultiple = false, Inherited = true)]
 public sealed class ParquetSortKeyAttribute : Attribute
 {
-    public ParquetSortKeyAttribute(int order)
+    public ParquetSortKeyAttribute(int priority)
     {
-        Order = order;
+        Priority = priority;
     }
 
-    public int Order { get; }
+    public int Priority { get; }
+
+    public int Order => Priority;
 
     public ParquetSortDirection Direction { get; set; } = ParquetSortDirection.Ascending;
 }

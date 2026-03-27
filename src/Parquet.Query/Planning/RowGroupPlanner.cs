@@ -155,9 +155,21 @@ internal static class RowGroupPlanner
             _ => null
         };
 
-        return builtInDecision
-            ?? TryEvaluateWithExtensions(predicate, context, predicatePlanners)
-            ?? new RowGroupPredicateDecision(predicate.Description, true, "pushdown", "Predicate type is not plannable.");
+        if (builtInDecision is not null && !builtInDecision.MayMatch)
+        {
+            return builtInDecision;
+        }
+
+        var extensionDecision = TryEvaluateWithExtensions(predicate, context, predicatePlanners);
+        if (extensionDecision is null)
+        {
+            return builtInDecision
+                ?? new RowGroupPredicateDecision(predicate.Description, true, "pushdown", "Predicate type is not plannable.");
+        }
+
+        return builtInDecision is null
+            ? extensionDecision
+            : CombineDecisions(builtInDecision, extensionDecision);
     }
 
     private static RowGroupPredicateDecision? TryEvaluateWithExtensions<T>(
@@ -232,6 +244,34 @@ internal static class RowGroupPlanner
             statistics is null
                 ? "No statistics were available for this column chunk."
                 : "Statistics could not rule the row group out.");
+    }
+
+    private static RowGroupPredicateDecision CombineDecisions(
+        RowGroupPredicateDecision builtInDecision,
+        RowGroupPredicateDecision extensionDecision)
+    {
+        var source = string.Equals(builtInDecision.Source, extensionDecision.Source, StringComparison.Ordinal)
+            ? builtInDecision.Source
+            : $"{builtInDecision.Source}+{extensionDecision.Source}";
+
+        if (!extensionDecision.MayMatch)
+        {
+            return new RowGroupPredicateDecision(
+                builtInDecision.Predicate,
+                mayMatch: false,
+                source,
+                extensionDecision.Reason);
+        }
+
+        var reason = string.Equals(builtInDecision.Reason, extensionDecision.Reason, StringComparison.Ordinal)
+            ? builtInDecision.Reason
+            : $"{builtInDecision.Reason} {extensionDecision.Reason}".Trim();
+
+        return new RowGroupPredicateDecision(
+            builtInDecision.Predicate,
+            mayMatch: true,
+            source,
+            reason);
     }
 
     private static RowGroupPredicateDecision EvaluateStartsWith<T>(
