@@ -2,6 +2,8 @@ namespace Parquet.Query.Planning;
 
 public sealed class ParquetQueryPlan
 {
+    private readonly IReadOnlyList<RowGroupPlan> _rowGroups;
+
     public ParquetQueryPlan(
         IReadOnlyList<QueryFilePlan> files,
         IReadOnlyList<string> pushdownPredicates,
@@ -20,6 +22,7 @@ public sealed class ParquetQueryPlan
         FilterColumns = filterColumns;
         DeferredColumns = deferredColumns;
         RequiresFullMaterialization = requiresFullMaterialization;
+        _rowGroups = files.SelectMany(file => file.RowGroups).ToArray();
     }
 
     public string FilePath => Files.Count == 1 ? Files[0].FilePath : string.Empty;
@@ -46,7 +49,7 @@ public sealed class ParquetQueryPlan
 
     public bool UsedFallbackPageIndex => RowGroups.Any(rowGroup => rowGroup.UsedFallbackPageIndex);
 
-    public IReadOnlyList<RowGroupPlan> RowGroups => Files.SelectMany(file => file.RowGroups).ToArray();
+    public IReadOnlyList<RowGroupPlan> RowGroups => _rowGroups;
 
     public int SelectedFileCount => Files.Count(file => file.ShouldRead);
 
