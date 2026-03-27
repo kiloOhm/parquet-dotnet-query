@@ -84,21 +84,7 @@ internal static class PartitionPruner
     }
 
     private static int CompareValues(object? left, object? right)
-    {
-        if (left is null || right is null)
-        {
-            return left == right ? 0 : 1;
-        }
-
-        if (left is IComparable comparable)
-        {
-            var targetType = Nullable.GetUnderlyingType(left.GetType()) ?? left.GetType();
-            var convertedRight = PushdownPredicateFactory.ConvertValue(right, targetType);
-            return comparable.CompareTo(convertedRight);
-        }
-
-        throw new NotSupportedException($"Values of type '{left.GetType().Name}' are not comparable for partition pruning.");
-    }
+        => PruningHelpers.CompareValues(left, right, allowNullEquality: true, "Values of type '{0}' are not comparable for partition pruning.");
 
     private static IReadOnlyDictionary<string, string> ExtractPartitionValues(string filePath)
     {

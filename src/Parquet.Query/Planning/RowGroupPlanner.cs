@@ -383,22 +383,7 @@ internal static class RowGroupPlanner
     }
 
     private static int CompareValues(object? left, object? right)
-    {
-        if (left is null || right is null)
-        {
-            throw new InvalidOperationException("Cannot compare null values for statistics pruning.");
-        }
-
-        var targetType = Nullable.GetUnderlyingType(left.GetType()) ?? left.GetType();
-        var convertedRight = PushdownPredicateFactory.ConvertValue(right, targetType);
-
-        if (left is IComparable comparable)
-        {
-            return comparable.CompareTo(convertedRight);
-        }
-
-        throw new NotSupportedException($"Values of type '{targetType}' are not comparable.");
-    }
+        => PruningHelpers.CompareValues(left, right, allowNullEquality: false, "Values of type '{0}' are not comparable.");
 
     private static string? GetOrdinalUpperBound(string prefix)
         => PruningHelpers.GetOrdinalUpperBound(prefix);

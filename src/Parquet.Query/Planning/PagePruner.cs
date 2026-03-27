@@ -480,21 +480,7 @@ internal static class PagePruner
     }
 
     private static int Compare(object? left, object? right)
-    {
-        if (left is null || right is null)
-        {
-            return left == right ? 0 : 1;
-        }
-
-        var targetType = Nullable.GetUnderlyingType(left.GetType()) ?? left.GetType();
-        var convertedRight = PushdownPredicateFactory.ConvertValue(right, targetType);
-        if (left is IComparable comparable)
-        {
-            return comparable.CompareTo(convertedRight);
-        }
-
-        throw new NotSupportedException($"Values of type '{targetType.Name}' are not comparable.");
-    }
+        => PruningHelpers.CompareValues(left, right, allowNullEquality: true, "Values of type '{0}' are not comparable.");
 
     private static List<RowInterval> Intersect(IReadOnlyList<RowInterval> left, IReadOnlyList<RowInterval> right)
     {
