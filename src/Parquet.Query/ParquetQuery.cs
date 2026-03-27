@@ -36,6 +36,7 @@ public sealed class ParquetQuery<TSource, TResult>
     private readonly IReadOnlyList<string> _filePaths;
     private readonly ParquetOptions? _parquetOptions;
     private readonly PushdownFilter<TSource> _pushdownFilter;
+    private readonly IReadOnlyList<IParquetPredicatePlanner<TSource>> _predicatePlanners;
     private readonly IReadOnlyList<Expression<Func<TSource, bool>>> _wherePredicates;
     private readonly IReadOnlyList<PredicatePushdownDiagnostic> _residualPredicates;
     private readonly Expression<Func<TSource, TResult>>? _projection;
@@ -45,6 +46,7 @@ public sealed class ParquetQuery<TSource, TResult>
         IReadOnlyList<string> filePaths,
         ParquetOptions? parquetOptions,
         PushdownFilter<TSource> pushdownFilter,
+        IReadOnlyList<IParquetPredicatePlanner<TSource>> predicatePlanners,
         IReadOnlyList<Expression<Func<TSource, bool>>> wherePredicates,
         IReadOnlyList<PredicatePushdownDiagnostic> residualPredicates,
         Expression<Func<TSource, TResult>>? projection,
@@ -53,6 +55,7 @@ public sealed class ParquetQuery<TSource, TResult>
         _filePaths = filePaths;
         _parquetOptions = parquetOptions;
         _pushdownFilter = pushdownFilter;
+        _predicatePlanners = predicatePlanners;
         _wherePredicates = wherePredicates;
         _residualPredicates = residualPredicates;
         _projection = projection;
@@ -79,6 +82,7 @@ public sealed class ParquetQuery<TSource, TResult>
             normalizedFilePaths,
             parquetOptions,
             PushdownFilter<TSource>.Empty,
+            Array.Empty<IParquetPredicatePlanner<TSource>>(),
             Array.Empty<Expression<Func<TSource, bool>>>(),
             Array.Empty<PredicatePushdownDiagnostic>(),
             projection: null,
@@ -93,6 +97,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _filePaths,
             _parquetOptions,
             _pushdownFilter.And(filter),
+            _predicatePlanners,
             _wherePredicates,
             _residualPredicates,
             _projection,
@@ -112,6 +117,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _filePaths,
             _parquetOptions,
             _pushdownFilter.And(split.PushdownFilter),
+            _predicatePlanners,
             new ReadOnlyCollection<Expression<Func<TSource, bool>>>(_wherePredicates.Concat(new[] { predicate }).ToArray()),
             new ReadOnlyCollection<PredicatePushdownDiagnostic>(_residualPredicates.Concat(split.Diagnostics).ToArray()),
             _projection,
@@ -126,6 +132,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _filePaths,
             _parquetOptions,
             _pushdownFilter,
+            _predicatePlanners,
             _wherePredicates,
             _residualPredicates,
             projection,
@@ -137,10 +144,37 @@ public sealed class ParquetQuery<TSource, TResult>
             _filePaths,
             _parquetOptions,
             _pushdownFilter,
+            _predicatePlanners,
             _wherePredicates,
             _residualPredicates,
             _projection,
             enabled);
+
+    public ParquetQuery<TSource, TResult> WithPredicatePlanner(IParquetPredicatePlanner<TSource> predicatePlanner)
+    {
+        ArgumentNullException.ThrowIfNull(predicatePlanner);
+        return WithPredicatePlanners(new[] { predicatePlanner });
+    }
+
+    public ParquetQuery<TSource, TResult> WithPredicatePlanners(IEnumerable<IParquetPredicatePlanner<TSource>> predicatePlanners)
+    {
+        ArgumentNullException.ThrowIfNull(predicatePlanners);
+
+        var combinedPlanners = _predicatePlanners
+            .Concat(predicatePlanners)
+            .Where(planner => planner is not null)
+            .ToArray();
+
+        return new ParquetQuery<TSource, TResult>(
+            _filePaths,
+            _parquetOptions,
+            _pushdownFilter,
+            new ReadOnlyCollection<IParquetPredicatePlanner<TSource>>(combinedPlanners),
+            _wherePredicates,
+            _residualPredicates,
+            _projection,
+            _strictPushdown);
+    }
 
     public ParquetQuery<TSource, TResult> WithParquetOptions(ParquetOptions parquetOptions)
     {
@@ -150,6 +184,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _filePaths,
             ParquetOptionsFactory.Clone(parquetOptions),
             _pushdownFilter,
+            _predicatePlanners,
             _wherePredicates,
             _residualPredicates,
             _projection,
@@ -894,7 +929,13 @@ public sealed class ParquetQuery<TSource, TResult>
             filterColumns.UnionWith(materializationPlan.FilterColumnPaths);
             deferredColumns.UnionWith(materializationPlan.DeferredColumnPaths);
 
-            var filePlan = await RowGroupPlanner.BuildFilePlanAsync(filePath, reader, _pushdownFilter, fileDecisions, cancellationToken);
+            var filePlan = await RowGroupPlanner.BuildFilePlanAsync(
+                filePath,
+                reader,
+                _pushdownFilter,
+                fileDecisions,
+                _predicatePlanners,
+                cancellationToken).ConfigureAwait(false);
             files.Add(new QueryExecutionFilePlan<TSource>(filePath, filePlan, materializationPlan));
             filePlans.Add(filePlan);
         }

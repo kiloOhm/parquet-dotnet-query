@@ -14,6 +14,7 @@ internal static class RowGroupPlanner
         ParquetReader reader,
         PushdownFilter<T> pushdownFilter,
         IReadOnlyList<FilePredicateDecision> fileDecisions,
+        IReadOnlyList<IParquetPredicatePlanner<T>> predicatePlanners,
         CancellationToken cancellationToken)
         where T : class, new()
     {
@@ -30,10 +31,17 @@ internal static class RowGroupPlanner
             var pageIndexAvailable = HasPersistedPageIndex(rowGroupReader, dataFields.Values);
             anyPageIndex |= pageIndexAvailable;
             var pagePruning = PagePruningResult.Full(rowGroupReader.RowCount);
+            var plannerContext = new ParquetRowGroupPlannerContext(
+                filePath,
+                rowGroupIndex,
+                reader,
+                rowGroupReader,
+                reader.Schema,
+                dataFields);
 
             foreach (var predicate in pushdownFilter.Predicates)
             {
-                var decision = EvaluatePredicate(predicate, rowGroupReader, dataFields);
+                var decision = EvaluatePredicate(predicate, plannerContext, predicatePlanners);
                 decisions.Add(decision);
 
                 if (!decision.MayMatch)
@@ -44,7 +52,17 @@ internal static class RowGroupPlanner
 
             if (shouldRead && !pushdownFilter.IsEmpty)
             {
-                pagePruning = await PagePruner.PruneAsync(rowGroupReader, reader.Schema, pushdownFilter, cancellationToken);
+                pagePruning = await PagePruner.PruneAsync(
+                    new ParquetPagePruningContext(
+                        filePath,
+                        rowGroupIndex,
+                        reader,
+                        rowGroupReader,
+                        reader.Schema,
+                        dataFields),
+                    pushdownFilter,
+                    predicatePlanners,
+                    cancellationToken).ConfigureAwait(false);
                 pageIndexAvailable |= pagePruning.PageIndexAvailable;
                 anyPageIndex |= pagePruning.PageIndexAvailable;
                 if (pagePruning.CandidateRowCountUpperBound == 0)
@@ -116,24 +134,53 @@ internal static class RowGroupPlanner
 
     private static RowGroupPredicateDecision EvaluatePredicate<T>(
         PushdownPredicate<T> predicate,
-        IParquetRowGroupReader rowGroupReader,
-        IReadOnlyDictionary<string, DataField> dataFields)
+        ParquetRowGroupPlannerContext context,
+        IReadOnlyList<IParquetPredicatePlanner<T>> predicatePlanners)
+        where T : class, new()
     {
-        if (!dataFields.TryGetValue(predicate.ColumnPath, out DataField? field))
+        if (!context.DataFields.TryGetValue(predicate.ColumnPath, out DataField? field))
         {
-            return new RowGroupPredicateDecision(
-                predicate.Description,
-                mayMatch: true,
-                source: "schema",
-                reason: $"Column '{predicate.ColumnPath}' was not found in the file schema.");
+            return TryEvaluateWithExtensions(predicate, context, predicatePlanners)
+                ?? new RowGroupPredicateDecision(
+                    predicate.Description,
+                    mayMatch: true,
+                    source: "schema",
+                    reason: $"Column '{predicate.ColumnPath}' was not found in the file schema.");
         }
 
-        return predicate switch
+        var builtInDecision = predicate switch
         {
-            ComparisonPushdownPredicate<T> comparison => EvaluateComparison(comparison, rowGroupReader, field),
-            StartsWithPushdownPredicate<T> startsWith => EvaluateStartsWith(startsWith, rowGroupReader, field),
-            _ => new RowGroupPredicateDecision(predicate.Description, true, "pushdown", "Predicate type is not plannable.")
+            ComparisonPushdownPredicate<T> comparison => EvaluateComparison(comparison, context.RowGroupReader, field),
+            StartsWithPushdownPredicate<T> startsWith => EvaluateStartsWith(startsWith, context.RowGroupReader, field),
+            _ => null
         };
+
+        return builtInDecision
+            ?? TryEvaluateWithExtensions(predicate, context, predicatePlanners)
+            ?? new RowGroupPredicateDecision(predicate.Description, true, "pushdown", "Predicate type is not plannable.");
+    }
+
+    private static RowGroupPredicateDecision? TryEvaluateWithExtensions<T>(
+        PushdownPredicate<T> predicate,
+        ParquetRowGroupPlannerContext context,
+        IReadOnlyList<IParquetPredicatePlanner<T>> predicatePlanners)
+        where T : class, new()
+    {
+        foreach (var planner in predicatePlanners)
+        {
+            if (!planner.CanPlan(predicate))
+            {
+                continue;
+            }
+
+            var decision = planner.TryEvaluateRowGroup(context, predicate);
+            if (decision is not null)
+            {
+                return decision;
+            }
+        }
+
+        return null;
     }
 
     private static RowGroupPredicateDecision EvaluateComparison<T>(

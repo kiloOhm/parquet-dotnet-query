@@ -9,52 +9,72 @@ namespace Parquet.Query.Planning;
 internal static class PagePruner
 {
     public static async Task<PagePruningResult> PruneAsync<T>(
-        IParquetRowGroupReader rowGroupReader,
-        ParquetSchema schema,
+        ParquetPagePruningContext context,
         PushdownFilter<T> pushdownFilter,
+        IReadOnlyList<IParquetPredicatePlanner<T>> predicatePlanners,
         CancellationToken cancellationToken)
         where T : class, new()
     {
         if (pushdownFilter.IsEmpty)
         {
-            return PagePruningResult.Full(rowGroupReader.RowCount);
+            return PagePruningResult.Full(context.RowGroupReader.RowCount);
         }
-
-        var dataFields = schema.GetDataFields()
-            .ToDictionary(field => field.Path.ToString(), StringComparer.Ordinal);
 
         IReadOnlyList<RowInterval>? survivingIntervals = null;
         var pageCount = 0;
         var pageIndexAvailable = false;
         var usedFallback = false;
-        OffsetIndex? lastOffsetIndex = null;
+        OffsetIndex? selectedOffsetIndex = null;
+        int? selectedPageCountUpperBound = null;
+        var sources = new HashSet<string>(StringComparer.Ordinal);
+        var reasons = new List<string>();
 
         foreach (var predicate in pushdownFilter.Predicates)
         {
-            if (!dataFields.TryGetValue(predicate.ColumnPath, out DataField? field))
+            var predicateResult = await TryPruneBuiltInAsync(context, predicate, cancellationToken).ConfigureAwait(false);
+            if (predicateResult is null)
+            {
+                predicateResult = await TryPruneWithExtensionsAsync(context, predicate, predicatePlanners, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (predicateResult is null)
             {
                 continue;
             }
-
-            var pageReader = await rowGroupReader.OpenColumnPageReaderAsync(field, cancellationToken);
-            lastOffsetIndex = pageReader.OffsetIndex;
-            pageCount = Math.Max(pageCount, pageReader.PageCount);
-
-            var hadPersistedColumnIndex = pageReader.ColumnIndex is not null;
-            var columnIndex = await pageReader.GetColumnIndexAsync(cancellationToken);
-            if (columnIndex is null)
-            {
-                continue;
-            }
-
-            pageIndexAvailable = true;
-            usedFallback |= !hadPersistedColumnIndex;
-
-            var predicateIntervals = GetCandidateIntervals(predicate, field, pageReader.OffsetIndex, columnIndex, rowGroupReader.RowCount);
 
             survivingIntervals = survivingIntervals is null
-                ? predicateIntervals.Intervals
-                : Intersect(survivingIntervals, predicateIntervals.Intervals);
+                ? predicateResult.Intervals
+                : Intersect(survivingIntervals, predicateResult.Intervals);
+
+            pageCount = Math.Max(pageCount, predicateResult.PageCount);
+            pageIndexAvailable |= predicateResult.PageIndexAvailable;
+            usedFallback |= predicateResult.UsedFallbackIndex;
+            if (!string.IsNullOrWhiteSpace(predicateResult.Source))
+            {
+                sources.Add(predicateResult.Source);
+            }
+
+            if (!string.IsNullOrWhiteSpace(predicateResult.Reason))
+            {
+                reasons.Add(predicateResult.Reason);
+            }
+
+            if (predicateResult.SelectedPageCount > 0)
+            {
+                selectedPageCountUpperBound = selectedPageCountUpperBound is null
+                    ? predicateResult.SelectedPageCount
+                    : Math.Min(selectedPageCountUpperBound.Value, predicateResult.SelectedPageCount);
+            }
+
+            if (predicateResult.PageIndexAvailable &&
+                context.DataFields.TryGetValue(predicate.ColumnPath, out DataField? field))
+            {
+                var pageReader = await context.RowGroupReader.OpenColumnPageReaderAsync(field, cancellationToken).ConfigureAwait(false);
+                if (pageReader.OffsetIndex.PageLocations.Count > 0)
+                {
+                    selectedOffsetIndex = pageReader.OffsetIndex;
+                }
+            }
 
             if (survivingIntervals.Count == 0)
             {
@@ -62,18 +82,20 @@ internal static class PagePruner
             }
         }
 
-        var selectedPageCount = survivingIntervals is not null && lastOffsetIndex is not null
-            ? SelectPageOrdinals(lastOffsetIndex, survivingIntervals, rowGroupReader.RowCount).Count
-            : 0;
+        var selectedPageCount = survivingIntervals is not null && selectedOffsetIndex is not null
+            ? SelectPageOrdinals(selectedOffsetIndex, survivingIntervals, context.RowGroupReader.RowCount).Count
+            : selectedPageCountUpperBound ?? 0;
+        var source = DescribeSource(sources, pageIndexAvailable, usedFallback);
+        var reason = DescribeReason(sources, reasons, pageIndexAvailable, selectedPageCount, pageCount);
 
         return survivingIntervals is null
             ? new PagePruningResult(
-                new[] { new RowInterval(0, rowGroupReader.RowCount) },
+                new[] { new RowInterval(0, context.RowGroupReader.RowCount) },
                 pageCount,
                 selectedPageCount: 0,
                 pageIndexAvailable,
                 usedFallback,
-                source: pageIndexAvailable ? (usedFallback ? "fallback" : "persisted") : "unavailable",
+                source,
                 reason: pageIndexAvailable
                     ? "No plannable page-level statistics were available for the requested predicates."
                     : "Page indexes were unavailable for the requested predicates.")
@@ -83,13 +105,118 @@ internal static class PagePruner
                 selectedPageCount,
                 pageIndexAvailable,
                 usedFallback,
-                source: pageIndexAvailable ? (usedFallback ? "fallback" : "persisted") : "unavailable",
-                reason: pageIndexAvailable
-                    ? selectedPageCount == pageCount
-                        ? "Page indexes were available but could not narrow the surviving page set."
-                        : "Page indexes narrowed the surviving page set."
-                    : "Page indexes were unavailable for the requested predicates.");
+                source,
+                reason);
     }
+
+    private static async ValueTask<PagePruningResult?> TryPruneBuiltInAsync<T>(
+        ParquetPagePruningContext context,
+        PushdownPredicate<T> predicate,
+        CancellationToken cancellationToken)
+        where T : class, new()
+    {
+        if (predicate is not ComparisonPushdownPredicate<T> &&
+            predicate is not StartsWithPushdownPredicate<T>)
+        {
+            return null;
+        }
+
+        if (!context.DataFields.TryGetValue(predicate.ColumnPath, out DataField? field))
+        {
+            return null;
+        }
+
+        var pageReader = await context.RowGroupReader.OpenColumnPageReaderAsync(field, cancellationToken).ConfigureAwait(false);
+        var hadPersistedColumnIndex = pageReader.ColumnIndex is not null;
+        var columnIndex = await pageReader.GetColumnIndexAsync(cancellationToken).ConfigureAwait(false);
+        if (columnIndex is null)
+        {
+            return null;
+        }
+
+        var predicateIntervals = GetCandidateIntervals(predicate, field, pageReader.OffsetIndex, columnIndex, context.RowGroupReader.RowCount);
+
+        return new PagePruningResult(
+            predicateIntervals.Intervals,
+            pageReader.PageCount,
+            predicateIntervals.PageCount,
+            pageIndexAvailable: true,
+            usedFallbackIndex: !hadPersistedColumnIndex,
+            source: !hadPersistedColumnIndex ? "fallback" : "persisted",
+            reason: predicateIntervals.PageCount == pageReader.PageCount
+                ? "Page indexes were available but could not narrow the surviving page set."
+                : "Page indexes narrowed the surviving page set.");
+    }
+
+    private static async ValueTask<PagePruningResult?> TryPruneWithExtensionsAsync<T>(
+        ParquetPagePruningContext context,
+        PushdownPredicate<T> predicate,
+        IReadOnlyList<IParquetPredicatePlanner<T>> predicatePlanners,
+        CancellationToken cancellationToken)
+        where T : class, new()
+    {
+        foreach (var planner in predicatePlanners)
+        {
+            if (!planner.CanPlan(predicate))
+            {
+                continue;
+            }
+
+            var result = await planner.TryPrunePagesAsync(context, predicate, cancellationToken).ConfigureAwait(false);
+            if (result is not null)
+            {
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    private static string DescribeSource(
+        IReadOnlyCollection<string> sources,
+        bool pageIndexAvailable,
+        bool usedFallback)
+    {
+        if (sources.Count == 0 || sources.All(IsBuiltInSource))
+        {
+            return pageIndexAvailable ? (usedFallback ? "fallback" : "persisted") : "unavailable";
+        }
+
+        return string.Join("+", sources.OrderBy(source => source, StringComparer.Ordinal));
+    }
+
+    private static string DescribeReason(
+        IReadOnlyCollection<string> sources,
+        IReadOnlyList<string> reasons,
+        bool pageIndexAvailable,
+        int selectedPageCount,
+        int pageCount)
+    {
+        if (sources.Count == 0 || sources.All(IsBuiltInSource))
+        {
+            return pageIndexAvailable
+                ? selectedPageCount == pageCount
+                    ? "Page indexes were available but could not narrow the surviving page set."
+                    : "Page indexes narrowed the surviving page set."
+                : "Page indexes were unavailable for the requested predicates.";
+        }
+
+        var distinctReasons = reasons
+            .Where(reason => !string.IsNullOrWhiteSpace(reason))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (distinctReasons.Length == 1)
+        {
+            return distinctReasons[0];
+        }
+
+        return selectedPageCount == pageCount
+            ? "Custom predicate planners were available but could not narrow the surviving page set."
+            : "Custom predicate planners narrowed the surviving page set.";
+    }
+
+    private static bool IsBuiltInSource(string source) =>
+        source is "persisted" or "fallback" or "unavailable";
 
     public static bool IsFullCoverage(IReadOnlyList<RowInterval> intervals, long rowCount) =>
         intervals.Count == 1 &&
@@ -440,52 +567,4 @@ internal static class PagePruner
     }
 
     private sealed record CandidateIntervals(IReadOnlyList<RowInterval> Intervals, int PageCount);
-}
-
-internal sealed record RowInterval(long Start, long End);
-
-internal sealed class PagePruningResult
-{
-    public static PagePruningResult Full(long rowCount) => new(
-        new[] { new RowInterval(0, rowCount) },
-        pageCount: 0,
-        selectedPageCount: 0,
-        pageIndexAvailable: false,
-        usedFallbackIndex: false,
-        source: "unavailable",
-        reason: "Page pruning was not applied.");
-
-    public PagePruningResult(
-        IReadOnlyList<RowInterval> intervals,
-        int pageCount,
-        int selectedPageCount,
-        bool pageIndexAvailable,
-        bool usedFallbackIndex,
-        string source,
-        string reason)
-    {
-        Intervals = intervals;
-        PageCount = pageCount;
-        SelectedPageCount = selectedPageCount;
-        PageIndexAvailable = pageIndexAvailable;
-        UsedFallbackIndex = usedFallbackIndex;
-        Source = source;
-        Reason = reason;
-    }
-
-    public IReadOnlyList<RowInterval> Intervals { get; }
-
-    public int PageCount { get; }
-
-    public int SelectedPageCount { get; }
-
-    public bool PageIndexAvailable { get; }
-
-    public bool UsedFallbackIndex { get; }
-
-    public string Source { get; }
-
-    public string Reason { get; }
-
-    public long CandidateRowCountUpperBound => Intervals.Sum(interval => interval.End - interval.Start);
 }

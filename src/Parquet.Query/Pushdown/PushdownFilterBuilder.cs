@@ -6,6 +6,13 @@ public sealed class PushdownFilterBuilder<T>
 {
     private readonly List<PushdownPredicate<T>> _predicates = new();
 
+    public PushdownFilterBuilder<T> Add(PushdownPredicate<T> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        _predicates.Add(predicate);
+        return this;
+    }
+
     public PushdownFilterBuilder<T> Eq<TValue>(Expression<Func<T, TValue>> selector, TValue value)
     {
         _predicates.Add(PushdownPredicateFactory.CreateComparison<T>(selector, ComparisonOperator.Equal, value));
