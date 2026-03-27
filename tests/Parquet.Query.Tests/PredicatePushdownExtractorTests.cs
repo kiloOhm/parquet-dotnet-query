@@ -88,6 +88,21 @@ public sealed class PredicatePushdownExtractorTests
         Assert.True(split.ResidualPredicate!.Compile()(new TestRow { Country = "DE", Age = 1 }));
     }
 
+    [Fact]
+    public void Extract_reports_why_a_predicate_was_not_pushed_down()
+    {
+        Expression<Func<TestRow, bool>> orPredicate =
+            row => row.Country == "DE" || row.Age >= 18;
+        Expression<Func<TestRow, bool>> startsWithPredicate =
+            row => row.Name.StartsWith("br", StringComparison.InvariantCultureIgnoreCase);
+
+        var orSplit = PredicatePushdownExtractor.Extract(orPredicate);
+        var startsWithSplit = PredicatePushdownExtractor.Extract(startsWithPredicate);
+
+        Assert.Contains(orSplit.Diagnostics, diagnostic => diagnostic.Reason.Contains("Logical OR", StringComparison.Ordinal));
+        Assert.Contains(startsWithSplit.Diagnostics, diagnostic => diagnostic.Reason.Contains("StringComparison.Ordinal", StringComparison.Ordinal));
+    }
+
     private static bool IsEligible(TestRow row) => row.Country.StartsWith("D", StringComparison.Ordinal) && row.Age % 2 == 0;
 
     private sealed class TestCriteria

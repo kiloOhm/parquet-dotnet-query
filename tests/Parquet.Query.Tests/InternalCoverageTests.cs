@@ -126,6 +126,50 @@ public sealed class InternalCoverageTests
         }
     }
 
+    [Fact]
+    public async Task ReadRowGroupAsync_covers_full_and_deferred_full_row_paths()
+    {
+        var filePath = Path.GetTempFileName();
+        System.IO.File.Delete(filePath);
+        filePath = Path.ChangeExtension(filePath, ".parquet");
+
+        try
+        {
+            await ParquetSerializer.SerializeAsync(
+                new[]
+                {
+                    new CollectionRow { Id = 1, Country = "DE", Tags = new[] { "a", "b" } },
+                    new CollectionRow { Id = 2, Country = "US", Tags = new[] { "c" } }
+                },
+                filePath);
+
+            var schema = await Parquet.ParquetReader.ReadSchemaAsync(filePath);
+            var projection = (System.Linq.Expressions.Expression<Func<CollectionRow, string[]>>)(row => row.Tags);
+            var deferredPlan = BuildMaterializationPlan<CollectionRow, string[]>(schema, projection);
+            Assert.False(GetRequiresFullMaterialization(deferredPlan));
+
+            var fullPlan = GetFullMaterializationPlan<CollectionRow>();
+
+            await using var stream = System.IO.File.OpenRead(filePath);
+            using var reader = await Parquet.ParquetReader.CreateAsync(stream);
+
+            var deferredRows = await InvokeReadRowGroupAsync<CollectionRow>(filePath, reader, deferredPlan);
+            var fullRows = await InvokeReadRowGroupAsync<CollectionRow>(filePath, reader, fullPlan);
+
+            Assert.Equal(new[] { "a", "b" }, deferredRows[0].Tags);
+            Assert.Equal(new[] { "c" }, deferredRows[1].Tags);
+            Assert.Equal(new[] { "a", "b" }, fullRows[0].Tags);
+            Assert.Equal(new[] { "c" }, fullRows[1].Tags);
+        }
+        finally
+        {
+            if (System.IO.File.Exists(filePath))
+            {
+                System.IO.File.Delete(filePath);
+            }
+        }
+    }
+
     private static object? InvokeDecodePrimitive(Type type, byte[] bytes)
     {
         var pagePrunerType = typeof(ParquetQuery).Assembly.GetType("Parquet.Query.Planning.PagePruner", throwOnError: true)
@@ -142,5 +186,55 @@ public sealed class InternalCoverageTests
         var method = pagePrunerType.GetMethod("GetOrdinalUpperBound", BindingFlags.NonPublic | BindingFlags.Static)
             ?? throw new InvalidOperationException("GetOrdinalUpperBound not found.");
         return (string?)method.Invoke(null, new object[] { prefix });
+    }
+
+    private static object BuildMaterializationPlan<TSource, TResult>(Parquet.Schema.ParquetSchema schema, System.Linq.Expressions.Expression<Func<TSource, TResult>> projection)
+        where TSource : class, new()
+    {
+        var assembly = typeof(ParquetQuery).Assembly;
+        var builderType = assembly.GetType("Parquet.Query.Internal.SourceMaterializationPlanBuilder", throwOnError: true)
+            ?? throw new InvalidOperationException("SourceMaterializationPlanBuilder type not found.");
+        var filterType = assembly.GetType("Parquet.Query.Pushdown.PushdownFilter`1", throwOnError: true)
+            ?? throw new InvalidOperationException("PushdownFilter type not found.");
+        var closedFilterType = filterType.MakeGenericType(typeof(TSource));
+        var emptyFilter = closedFilterType.GetProperty("Empty", BindingFlags.Public | BindingFlags.Static)?.GetValue(null)
+            ?? throw new InvalidOperationException("PushdownFilter.Empty not found.");
+        var buildMethod = builderType.GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .SingleOrDefault(method => method.Name == "Build" && method.IsGenericMethodDefinition && method.GetGenericArguments().Length == 2)
+            ?? throw new InvalidOperationException("Build method not found.");
+        var closedBuildMethod = buildMethod.MakeGenericMethod(typeof(TSource), typeof(TResult));
+        return closedBuildMethod.Invoke(null, new object[] { schema, emptyFilter, Array.Empty<System.Linq.Expressions.Expression<Func<TSource, bool>>>(), projection })!
+            ?? throw new InvalidOperationException("Build returned null.");
+    }
+
+    private static object GetFullMaterializationPlan<TSource>()
+        where TSource : class, new()
+    {
+        var assembly = typeof(ParquetQuery).Assembly;
+        var planType = assembly.GetType("Parquet.Query.Internal.SourceMaterializationPlan`1", throwOnError: true)
+            ?? throw new InvalidOperationException("SourceMaterializationPlan type not found.");
+        var closedPlanType = planType.MakeGenericType(typeof(TSource));
+        return closedPlanType.GetProperty("Full", BindingFlags.Public | BindingFlags.Static)?.GetValue(null)
+            ?? throw new InvalidOperationException("SourceMaterializationPlan.Full not found.");
+    }
+
+    private static bool GetRequiresFullMaterialization(object plan) =>
+        (bool)(plan.GetType().GetProperty("RequiresFullMaterialization", BindingFlags.Public | BindingFlags.Instance)?.GetValue(plan)
+            ?? throw new InvalidOperationException("RequiresFullMaterialization not found."));
+
+    private static async Task<IReadOnlyList<TSource>> InvokeReadRowGroupAsync<TSource>(string filePath, Parquet.ParquetReader reader, object plan)
+        where TSource : class, new()
+    {
+        var assembly = typeof(ParquetQuery).Assembly;
+        var materializerType = assembly.GetType("Parquet.Query.Internal.PartialRowMaterializer`1", throwOnError: true)
+            ?? throw new InvalidOperationException("PartialRowMaterializer type not found.");
+        var closedMaterializerType = materializerType.MakeGenericType(typeof(TSource));
+        var readMethod = closedMaterializerType.GetMethod("ReadRowGroupAsync", BindingFlags.Public | BindingFlags.Static)
+            ?? throw new InvalidOperationException("ReadRowGroupAsync not found.");
+        var task = (Task)readMethod.Invoke(null, new object?[] { filePath, reader, 0, plan, null, null, CancellationToken.None })!;
+        await task.ConfigureAwait(false);
+        var resultProperty = task.GetType().GetProperty("Result", BindingFlags.Public | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Task result not found.");
+        return (IReadOnlyList<TSource>)resultProperty.GetValue(task)!;
     }
 }

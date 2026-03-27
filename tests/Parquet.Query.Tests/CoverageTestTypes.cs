@@ -66,3 +66,41 @@ public sealed class NoDefaultCtorAddress
 
     public string City { get; }
 }
+
+public sealed class CollectionRow
+{
+    public int Id { get; set; }
+
+    public string Country { get; set; } = string.Empty;
+
+    public string[] Tags { get; set; } = Array.Empty<string>();
+}
+
+public sealed class ListCollectionRow
+{
+    public int Id { get; set; }
+
+    public string Country { get; set; } = string.Empty;
+
+    public List<string> Tags { get; set; } = new();
+}
+
+public sealed class ConstructorProjectionResult
+{
+    public ConstructorProjectionResult(int id, string name)
+    {
+        Id = id;
+        Name = name;
+    }
+
+    public int Id { get; }
+
+    public string Name { get; }
+}
+
+public sealed class CollectionProjectionResult
+{
+    public int Id { get; set; }
+
+    public string[] Tags { get; set; } = Array.Empty<string>();
+}

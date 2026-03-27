@@ -37,6 +37,191 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CountAsync_returns_exact_count_for_filtered_query_without_projection_materialization()
+    {
+        var filePath = Path.Combine(_tempDirectory, "count-filtered.parquet");
+        await WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 },
+                new TestRow { Id = 2, Country = "DE", Name = "bravo", Age = 20 },
+                new TestRow { Id = 3, Country = "DE", Name = "charlie", Age = 30 },
+                new TestRow { Id = 4, Country = "US", Name = "delta", Age = 40 }
+            });
+
+        var query = ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Where(row => row.Country == "DE" && row.Age >= 20)
+            .Select(row => row.Name);
+
+        var count = await query.CountAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.Equal(2, count);
+        Assert.Equal(rows.Count, count);
+    }
+
+    [Fact]
+    public async Task CountAsync_uses_metadata_only_when_no_predicates_are_present()
+    {
+        var filePath = Path.Combine(_tempDirectory, "count-all.parquet");
+        await WriteRowsAsync(
+            filePath,
+            Enumerable.Range(1, 6)
+                .Select(index => new TestRow
+                {
+                    Id = index,
+                    Country = index % 2 == 0 ? "DE" : "US",
+                    Name = $"row-{index}",
+                    Age = 20 + index
+                })
+                .ToArray(),
+            configureSerializerOptions: options => options.RowGroupSize = 2);
+
+        var query = ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Select(row => row.Name);
+
+        var plan = await query.PlanAsync();
+        var count = await query.CountAsync();
+
+        Assert.Equal(plan.RowGroups.Sum(rowGroup => rowGroup.RowCount), count);
+        Assert.Equal(6, count);
+    }
+
+    [Fact]
+    public async Task LongCountAsync_matches_CountAsync()
+    {
+        var filePath = Path.Combine(_tempDirectory, "long-count.parquet");
+        await WriteRowsAsync(
+            filePath,
+            Enumerable.Range(1, 4)
+                .Select(index => new TestRow
+                {
+                    Id = index,
+                    Country = index <= 2 ? "DE" : "US",
+                    Name = $"row-{index}",
+                    Age = 10 * index
+                })
+                .ToArray());
+
+        var query = ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Where(row => row.Country == "DE")
+            .Select(row => row.Name);
+
+        Assert.Equal(await query.CountAsync(), await query.LongCountAsync());
+    }
+
+    [Fact]
+    public async Task AnyAsync_uses_metadata_shortcut_when_no_predicates_are_present()
+    {
+        var filePath = Path.Combine(_tempDirectory, "any-all.parquet");
+        await WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 }
+            });
+
+        var any = await ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .AnyAsync();
+
+        Assert.True(any);
+    }
+
+    [Fact]
+    public async Task AnyAsync_returns_false_when_filtered_query_has_no_matches()
+    {
+        var filePath = Path.Combine(_tempDirectory, "any-none.parquet");
+        await WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 },
+                new TestRow { Id = 2, Country = "US", Name = "beta", Age = 20 }
+            });
+
+        var any = await ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Where(row => row.Country == "FR")
+            .AnyAsync();
+
+        Assert.False(any);
+    }
+
+    [Fact]
+    public async Task FirstOrDefaultAsync_returns_first_projected_match_without_materializing_all_results()
+    {
+        var filePath = Path.Combine(_tempDirectory, "first-or-default.parquet");
+        await WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 },
+                new TestRow { Id = 2, Country = "DE", Name = "bravo", Age = 20 },
+                new TestRow { Id = 3, Country = "US", Name = "charlie", Age = 30 }
+            });
+
+        var first = await ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Where(row => row.Country == "DE" && row.Age >= 20)
+            .Select(row => row.Name)
+            .FirstOrDefaultAsync();
+
+        Assert.Equal("bravo", first);
+    }
+
+    [Fact]
+    public async Task FirstOrDefaultAsync_returns_default_when_no_rows_match()
+    {
+        var filePath = Path.Combine(_tempDirectory, "first-or-default-none.parquet");
+        await WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 }
+            });
+
+        var first = await ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Where(row => row.Country == "US")
+            .Select(row => row.Name)
+            .FirstOrDefaultAsync();
+
+        Assert.Null(first);
+    }
+
+    [Fact]
+    public async Task FirstOrDefaultAsync_supports_deferred_full_row_projection_path()
+    {
+        var filePath = Path.Combine(_tempDirectory, "first-or-default-collection.parquet");
+        await ParquetSerializer.SerializeAsync(
+            new[]
+            {
+                new CollectionRow { Id = 1, Country = "DE", Tags = new[] { "a", "b" } },
+                new CollectionRow { Id = 2, Country = "US", Tags = new[] { "c" } }
+            },
+            filePath);
+
+        var first = await ParquetQuery
+            .FromFile<CollectionRow>(filePath)
+            .Where(row => row.Country == "DE")
+            .Select(row => new CollectionProjectionResult
+            {
+                Id = row.Id,
+                Tags = row.Tags
+            })
+            .FirstOrDefaultAsync();
+
+        Assert.NotNull(first);
+        Assert.Equal(1, first!.Id);
+        Assert.Equal(new[] { "a", "b" }, first.Tags);
+    }
+
+    [Fact]
     public async Task ToListAsync_applies_residual_row_filter_after_pushdown()
     {
         var filePath = Path.Combine(_tempDirectory, "residual.parquet");
@@ -175,6 +360,30 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         Assert.Equal(2, row.Id);
         Assert.Equal("Munich", row.City);
         Assert.Equal(20, row.Score);
+    }
+
+    [Fact]
+    public async Task Select_supports_vectorized_constructor_projection()
+    {
+        var filePath = Path.Combine(_tempDirectory, "constructor-vectorized-projection.parquet");
+        await WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 },
+                new TestRow { Id = 2, Country = "US", Name = "bravo", Age = 20 }
+            });
+
+        var rows = await ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Select(row => new ConstructorProjectionResult(row.Id, row.Name))
+            .ToListAsync();
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(1, rows[0].Id);
+        Assert.Equal("alpha", rows[0].Name);
+        Assert.Equal(2, rows[1].Id);
+        Assert.Equal("bravo", rows[1].Name);
     }
 
     [Fact]
@@ -355,6 +564,163 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ToAsyncEnumerable_uses_direct_scalar_projection_when_no_filters_are_present()
+    {
+        var filePath = Path.Combine(_tempDirectory, "async-direct-scalar.parquet");
+        await WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 },
+                new TestRow { Id = 2, Country = "US", Name = "beta", Age = 20 }
+            });
+
+        var query = ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Select(row => row.Name);
+
+        var names = new List<string>();
+        await foreach (var name in query.ToAsyncEnumerable())
+        {
+            names.Add(name);
+        }
+
+        Assert.Equal(new[] { "alpha", "beta" }, names.ToArray());
+    }
+
+    [Fact]
+    public async Task ToAsyncEnumerable_uses_vectorized_projection_for_member_init_results()
+    {
+        var filePath = Path.Combine(_tempDirectory, "async-vectorized-member-init.parquet");
+        await WriteNestedRowsAsync(
+            filePath,
+            new[]
+            {
+                new NestedTestRow
+                {
+                    Id = 1,
+                    Country = "DE",
+                    Address = new TestAddress { City = "Berlin", PostalCode = "10115" },
+                    Metrics = new TestMetrics { Score = 10, Rank = 1 }
+                },
+                new NestedTestRow
+                {
+                    Id = 2,
+                    Country = "DE",
+                    Address = new TestAddress { City = "Munich", PostalCode = "80331" },
+                    Metrics = new TestMetrics { Score = 20, Rank = 2 }
+                }
+            });
+
+        var query = ParquetQuery
+            .FromFile<NestedTestRow>(filePath)
+            .Where(row => row.Country == "DE" && row.Metrics.Score >= 15)
+            .Select(row => new NestedProjectionResult
+            {
+                Id = row.Id,
+                City = row.Address.City,
+                Score = row.Metrics.Score
+            });
+
+        var results = new List<NestedProjectionResult>();
+        await foreach (var result in query.ToAsyncEnumerable())
+        {
+            results.Add(result);
+        }
+
+        var row = Assert.Single(results);
+        Assert.Equal(2, row.Id);
+        Assert.Equal("Munich", row.City);
+        Assert.Equal(20, row.Score);
+    }
+
+    [Fact]
+    public async Task ToAsyncEnumerable_uses_vectorized_constructor_projection()
+    {
+        var filePath = Path.Combine(_tempDirectory, "async-vectorized-constructor.parquet");
+        await WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 },
+                new TestRow { Id = 2, Country = "US", Name = "bravo", Age = 20 }
+            });
+
+        var query = ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Select(row => new ConstructorProjectionResult(row.Id, row.Name));
+
+        var results = new List<ConstructorProjectionResult>();
+        await foreach (var result in query.ToAsyncEnumerable())
+        {
+            results.Add(result);
+        }
+
+        Assert.Equal(2, results.Count);
+        Assert.Equal("alpha", results[0].Name);
+        Assert.Equal("bravo", results[1].Name);
+    }
+
+    [Fact]
+    public async Task ToAsyncEnumerable_supports_deferred_full_row_collection_projection_path()
+    {
+        var filePath = Path.Combine(_tempDirectory, "async-collection-projection.parquet");
+        await ParquetSerializer.SerializeAsync(
+            new[]
+            {
+                new CollectionRow { Id = 1, Country = "DE", Tags = new[] { "a", "b" } },
+                new CollectionRow { Id = 2, Country = "US", Tags = new[] { "c" } }
+            },
+            filePath);
+
+        var query = ParquetQuery
+            .FromFile<CollectionRow>(filePath)
+            .Where(row => row.Country == "DE")
+            .Select(row => row.Tags);
+
+        var rows = new List<string[]>();
+        await foreach (var tags in query.ToAsyncEnumerable())
+        {
+            rows.Add(tags);
+        }
+
+        var result = Assert.Single(rows);
+        Assert.Equal(new[] { "a", "b" }, result);
+    }
+
+    [Fact]
+    public async Task ToAsyncEnumerable_supports_deferred_full_row_object_projection_path()
+    {
+        var filePath = Path.Combine(_tempDirectory, "async-collection-object-projection.parquet");
+        await ParquetSerializer.SerializeAsync(
+            new[]
+            {
+                new CollectionRow { Id = 1, Country = "DE", Tags = new[] { "a", "b" } },
+                new CollectionRow { Id = 2, Country = "US", Tags = new[] { "c" } }
+            },
+            filePath);
+
+        var query = ParquetQuery
+            .FromFile<CollectionRow>(filePath)
+            .Where(row => row.Country == "DE")
+            .Select(row => new CollectionProjectionResult
+            {
+                Id = row.Id,
+                Tags = row.Tags
+            });
+
+        var rows = new List<CollectionProjectionResult>();
+        await foreach (var result in query.ToAsyncEnumerable())
+        {
+            rows.Add(result);
+        }
+
+        var projection = Assert.Single(rows);
+        Assert.Equal(1, projection.Id);
+        Assert.Equal(new[] { "a", "b" }, projection.Tags);
+    }
+
+    [Fact]
     public async Task ToAsyncEnumerable_handles_full_materialization_projection_path()
     {
         var filePath = Path.Combine(_tempDirectory, "async-full-materialization.parquet");
@@ -449,8 +815,104 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
 
         Assert.Contains("Pushdown: Metrics.Score >= 15", explanation);
         Assert.Contains("Residual: row.Address.City.EndsWith(\"h\")", explanation);
+        Assert.Contains("Residual Diagnostics:", explanation);
+        Assert.Contains("Method calls are not pushdown-eligible", explanation);
         Assert.Contains("Read Columns: Address/City, Metrics/Score", explanation);
         Assert.Contains("RG 0:", explanation);
+    }
+
+    [Fact]
+    public async Task Select_supports_collection_leaf_projection_without_full_materialization()
+    {
+        var filePath = Path.Combine(_tempDirectory, "collection-projection.parquet");
+        await ParquetSerializer.SerializeAsync(
+            new[]
+            {
+                new CollectionRow { Id = 1, Country = "DE", Tags = new[] { "a", "b" } },
+                new CollectionRow { Id = 2, Country = "US", Tags = new[] { "c" } }
+            },
+            filePath);
+
+        var query = ParquetQuery
+            .FromFile<CollectionRow>(filePath)
+            .Where(row => row.Country == "DE")
+            .Select(row => row.Tags);
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.False(plan.RequiresFullMaterialization);
+        var tags = Assert.Single(rows);
+        Assert.Equal(new[] { "a", "b" }, tags);
+    }
+
+    [Fact]
+    public async Task Select_supports_projection_of_filter_column_via_direct_scalar_path()
+    {
+        var filePath = Path.Combine(_tempDirectory, "filter-column-projection.parquet");
+        await WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 },
+                new TestRow { Id = 2, Country = "DE", Name = "bravo", Age = 20 },
+                new TestRow { Id = 3, Country = "US", Name = "charlie", Age = 30 }
+            });
+
+        var rows = await ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .Where(row => row.Name.StartsWith("b", StringComparison.Ordinal))
+            .Select(row => row.Name)
+            .ToListAsync();
+
+        Assert.Equal(new[] { "bravo" }, rows.ToArray());
+    }
+
+    [Fact]
+    public async Task Select_supports_collection_leaf_projection_without_filters()
+    {
+        var filePath = Path.Combine(_tempDirectory, "collection-projection-no-filter.parquet");
+        await ParquetSerializer.SerializeAsync(
+            new[]
+            {
+                new CollectionRow { Id = 1, Country = "DE", Tags = new[] { "a", "b" } },
+                new CollectionRow { Id = 2, Country = "US", Tags = new[] { "c" } }
+            },
+            filePath);
+
+        var rows = await ParquetQuery
+            .FromFile<CollectionRow>(filePath)
+            .Select(row => row.Tags)
+            .ToListAsync();
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(new[] { "a", "b" }, rows[0]);
+        Assert.Equal(new[] { "c" }, rows[1]);
+    }
+
+    [Fact]
+    public async Task PlanAsync_supports_list_collection_leaf_projection_without_full_materialization()
+    {
+        var filePath = Path.Combine(_tempDirectory, "list-collection-projection.parquet");
+        await ParquetSerializer.SerializeAsync(
+            new[]
+            {
+                new ListCollectionRow { Id = 1, Country = "DE", Tags = new List<string> { "a", "b" } },
+                new ListCollectionRow { Id = 2, Country = "US", Tags = new List<string> { "c" } }
+            },
+            filePath);
+
+        var query = ParquetQuery
+            .FromFile<ListCollectionRow>(filePath)
+            .Where(row => row.Country == "DE")
+            .Select(row => row.Tags);
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.False(plan.RequiresFullMaterialization);
+        var tags = Assert.Single(rows);
+        Assert.Equal(new[] { "a", "b" }, tags);
     }
 
     [Fact]
