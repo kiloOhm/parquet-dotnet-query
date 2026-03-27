@@ -20,12 +20,12 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
-  <ItemGroup Condition="Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj')">
+  <ItemGroup Condition="Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj') and '$(Configuration)' != 'Release'">
     <ProjectReference Include="..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj" />
   </ItemGroup>
 
-  <ItemGroup Condition="!Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj')">
-    <PackageReference Include="kiloOhm.Parquet.Net" Version="5.6.0-pre.3--kiloOhm.2" />
+  <ItemGroup Condition="!Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj') or '$(Configuration)' == 'Release'">
+    <PackageReference Include="kiloOhm.Parquet.Net" Version="5.6.0-pre.3--kiloOhm.4" />
   </ItemGroup>
 
   <ItemGroup>

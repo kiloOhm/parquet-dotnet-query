@@ -1,17 +1,57 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <Company>kiloOhm</Company>
+    <PackageId>kiloOhm.Parquet.Net.Query</PackageId>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\Parquet.Query.xml</DocumentationFile>
+    <DebugType>full</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <PackageTags>apache parquet dotnet net c# query pushdown pruning projection analytics</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <Authors>Lukas Wicke (@kiloOhm)</Authors>
+    <Product>parquet-dotnet-query</Product>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/kiloOhm/parquet-dotnet-query</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/kiloOhm/parquet-dotnet-query</RepositoryUrl>
+    <RepositoryType>GitHub</RepositoryType>
+    <PackageIcon>icon.png</PackageIcon>
+    <Description>Query layer for Apache Parquet with explicit predicate pushdown, pruning, and projection on top of kiloOhm.Parquet.Net.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
-  <ItemGroup Condition="Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj')">
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <AllowedOutputExtensionsInPackageBuildOutputFolder>$(AllowedOutputExtensionsInPackageBuildOutputFolder);.pdb</AllowedOutputExtensionsInPackageBuildOutputFolder>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(Configuration)' == 'Release'">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.0.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj') and '$(Configuration)' != 'Release'">
     <ProjectReference Include="..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj" />
   </ItemGroup>
 
-  <ItemGroup Condition="!Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj')">
-    <PackageReference Include="kiloOhm.Parquet.Net" Version="5.6.0-pre.3--kiloOhm.2" />
+  <ItemGroup Condition="!Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj') or '$(Configuration)' == 'Release'">
+    <PackageReference Include="kiloOhm.Parquet.Net" Version="5.6.0-pre.3--kiloOhm.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md">
+      <Pack>true</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Include="..\icon.png">
+      <Pack>true</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,163 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - ".github/ISSUE_TEMPLATE/**"
+
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - ".github/ISSUE_TEMPLATE/**"
+
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: "Unit Tests - ${{ matrix.name }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux x64
+          - os: windows-latest
+            name: Windows x64
+          - os: macos-latest
+            name: MacOS ARM64
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Test
+        run: dotnet test Parquet.Query.slnx -c release
+
+  benchmark:
+    name: "Benchmarks - ${{ matrix.name }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux x64
+          - os: windows-latest
+            name: Windows x64
+          - os: macos-latest
+            name: MacOS ARM64
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Run Benchmarks
+        run: dotnet run -c release --project benchmarks/Parquet.Query.Benchmarks/Parquet.Query.Benchmarks.csproj
+
+  build:
+    runs-on: ubuntu-latest
+    name: "Build NuGet"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create variables
+        run: |
+          VERSION=$(head -n 1 docs/release-notes.md | xargs | tr -d ' #')
+          VERSION_MAJOR=$(echo "$VERSION" | cut -d. -f1).0.0
+          VERSION_NO_SUFFIX=$(echo "$VERSION" | cut -d- -f1)
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "VERSION_MAJOR=$VERSION_MAJOR" >> "$GITHUB_ENV"
+          echo "VERSION_NO_SUFFIX=$VERSION_NO_SUFFIX" >> "$GITHUB_ENV"
+
+      - name: Print variables
+        run: |
+          echo "head_ref: ${{ github.head_ref }}"
+          echo "run id: ${{ github.run_id }}"
+          echo "VERSION: ${{ env.VERSION }}"
+          echo "VERSION_MAJOR: ${{ env.VERSION_MAJOR }}"
+          echo "VERSION_NO_SUFFIX: ${{ env.VERSION_NO_SUFFIX }}"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build library
+        run: dotnet build Parquet.Query.slnx -c release /p:Version=$VERSION /p:FileVersion=$VERSION_NO_SUFFIX.0 /p:AssemblyVersion=$VERSION_MAJOR.0
+
+      - name: Collect artifacts
+        run: |
+          mkdir artifacts
+          cp src/Parquet.Query/bin/Release/*.nupkg artifacts/
+          cp src/Parquet.Query.Extensions.Search/bin/Release/*.nupkg artifacts/
+          cp src/Parquet.Query.Extensions.Writing/bin/Release/*.nupkg artifacts/
+          awk 'BEGIN{seen=0} /^# /{seen++; if(seen==2) exit; next} seen==1 {print}' docs/release-notes.md > artifacts/release-notes.md
+          echo "$VERSION" > artifacts/version.txt
+
+      - uses: actions/upload-artifact@v4
+        name: Upload artifacts
+        with:
+          name: bin
+          path: artifacts/*
+
+  release:
+    name: "Publish to NuGet"
+    runs-on: ubuntu-latest
+    needs:
+      - test
+      - build
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Download library binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: bin
+          path: bin
+
+      - name: Print release notes
+        run: cat bin/release-notes.md
+
+      - name: Publish to NuGet
+        run: dotnet nuget push bin/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  release-all:
+    name: "Make GitHub Release"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs:
+      - release
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Download library binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: bin
+          path: bin
+
+      - name: Restore version from file
+        run: echo "VERSION=$(cat bin/version.txt | xargs)" >> "$GITHUB_ENV"
+
+      - name: View artifacts to be used
+        run: ls -R
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        if: ${{ !contains(env.VERSION, '-') }}
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: ${{ env.VERSION }}
+          files: |
+            bin/*.nupkg
+          body_path: bin/release-notes.md

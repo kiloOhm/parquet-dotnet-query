@@ -1,4 +1,15 @@
 <Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".gitignore" />
+    <File Path="README.md" />
+    <File Path="docs/release-notes.md" />
+    <File Path="src/icon.png" />
+  </Folder>
+  <Folder Name="/Solution Items/.github/">
+  </Folder>
+  <Folder Name="/Solution Items/.github/workflows/">
+    <File Path=".github/workflows/build.yml" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Parquet.Query/Parquet.Query.csproj" />
     <Project Path="src/Parquet.Query.Extensions.Search/Parquet.Query.Extensions.Search.csproj" />
