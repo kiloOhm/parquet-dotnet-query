@@ -1,0 +1,273 @@
+using Parquet.Data;
+using Parquet.Query.Internal;
+using Parquet.Query.Pushdown;
+using Parquet.Schema;
+
+namespace Parquet.Query.Planning;
+
+internal static class RowGroupPlanner
+{
+    public static ParquetQueryPlan Build<T>(
+        string filePath,
+        ParquetReader reader,
+        PushdownFilter<T> pushdownFilter,
+        IReadOnlyList<string> residualPredicates,
+        SourceMaterializationPlan<T> materializationPlan)
+        where T : class, new()
+    {
+        var dataFields = reader.Schema.GetDataFields()
+            .ToDictionary(field => field.Path.ToString(), StringComparer.Ordinal);
+
+        var rowGroups = new List<RowGroupPlan>(reader.RowGroupCount);
+        for (var rowGroupIndex = 0; rowGroupIndex < reader.RowGroupCount; rowGroupIndex++)
+        {
+            using var rowGroupReader = reader.OpenRowGroupReader(rowGroupIndex);
+            var decisions = new List<RowGroupPredicateDecision>(pushdownFilter.Predicates.Count);
+            var shouldRead = true;
+
+            foreach (var predicate in pushdownFilter.Predicates)
+            {
+                var decision = EvaluatePredicate(predicate, rowGroupReader, dataFields);
+                decisions.Add(decision);
+
+                if (!decision.MayMatch)
+                {
+                    shouldRead = false;
+                }
+            }
+
+            rowGroups.Add(new RowGroupPlan(rowGroupIndex, rowGroupReader.RowCount, shouldRead, decisions));
+        }
+
+        return new ParquetQueryPlan(
+            filePath,
+            pushdownFilter.Predicates.Select(predicate => predicate.Description).ToArray(),
+            residualPredicates,
+            materializationPlan.RequiresFullMaterialization
+                ? reader.Schema.GetDataFields().Select(field => field.Path.ToString()).ToArray()
+                : materializationPlan.RequiredColumnPaths,
+            materializationPlan.RequiresFullMaterialization,
+            rowGroups);
+    }
+
+    private static RowGroupPredicateDecision EvaluatePredicate<T>(
+        PushdownPredicate<T> predicate,
+        IParquetRowGroupReader rowGroupReader,
+        IReadOnlyDictionary<string, DataField> dataFields)
+    {
+        if (!dataFields.TryGetValue(predicate.ColumnPath, out DataField? field))
+        {
+            return new RowGroupPredicateDecision(
+                predicate.Description,
+                mayMatch: true,
+                source: "schema",
+                reason: $"Column '{predicate.ColumnPath}' was not found in the file schema.");
+        }
+
+        return predicate switch
+        {
+            ComparisonPushdownPredicate<T> comparison => EvaluateComparison(comparison, rowGroupReader, field),
+            StartsWithPushdownPredicate<T> startsWith => EvaluateStartsWith(startsWith, rowGroupReader, field),
+            _ => new RowGroupPredicateDecision(predicate.Description, true, "pushdown", "Predicate type is not plannable.")
+        };
+    }
+
+    private static RowGroupPredicateDecision EvaluateComparison<T>(
+        ComparisonPushdownPredicate<T> predicate,
+        IParquetRowGroupReader rowGroupReader,
+        DataField field)
+    {
+        var statistics = rowGroupReader.GetStatistics(field);
+        if (TryRuleOutWithStatistics(predicate, statistics, out string? reason))
+        {
+            return new RowGroupPredicateDecision(predicate.Description, false, "statistics", reason!);
+        }
+
+        if (predicate.Operator == ComparisonOperator.Equal && predicate.Value is not null)
+        {
+            try
+            {
+                if (!rowGroupReader.MightMatchEquals(field, predicate.Value))
+                {
+                    return new RowGroupPredicateDecision(
+                        predicate.Description,
+                        false,
+                        "bloom",
+                        "Bloom filter ruled the equality predicate out.");
+                }
+
+                return new RowGroupPredicateDecision(
+                    predicate.Description,
+                    true,
+                    "statistics+bloom",
+                    statistics is null
+                        ? "Bloom filter did not rule the row group out."
+                        : "Statistics and bloom filter did not rule the row group out.");
+            }
+            catch (Exception exception)
+            {
+                return new RowGroupPredicateDecision(
+                    predicate.Description,
+                    true,
+                    "bloom",
+                    $"Bloom filter was unavailable: {exception.Message}");
+            }
+        }
+
+        return new RowGroupPredicateDecision(
+            predicate.Description,
+            true,
+            "statistics",
+            statistics is null
+                ? "No statistics were available for this column chunk."
+                : "Statistics could not rule the row group out.");
+    }
+
+    private static RowGroupPredicateDecision EvaluateStartsWith<T>(
+        StartsWithPushdownPredicate<T> predicate,
+        IParquetRowGroupReader rowGroupReader,
+        DataField field)
+    {
+        var statistics = rowGroupReader.GetStatistics(field);
+        if (statistics?.MinValue is not string minValue || statistics.MaxValue is not string maxValue)
+        {
+            return new RowGroupPredicateDecision(
+                predicate.Description,
+                true,
+                "statistics",
+                "String min/max statistics were not available.");
+        }
+
+        var upperBound = GetOrdinalUpperBound(predicate.Prefix);
+        var mayMatch = string.CompareOrdinal(maxValue, predicate.Prefix) >= 0 &&
+            (upperBound is null || string.CompareOrdinal(minValue, upperBound) < 0);
+
+        return new RowGroupPredicateDecision(
+            predicate.Description,
+            mayMatch,
+            "statistics",
+            mayMatch
+                ? "String min/max statistics overlap the requested prefix range."
+                : "String min/max statistics rule the prefix range out.");
+    }
+
+    private static bool TryRuleOutWithStatistics<T>(
+        ComparisonPushdownPredicate<T> predicate,
+        DataColumnStatistics? statistics,
+        out string? reason)
+    {
+        reason = null;
+
+        if (statistics is null)
+        {
+            return false;
+        }
+
+        switch (predicate.Operator)
+        {
+            case ComparisonOperator.Equal:
+                if (predicate.Value is not null &&
+                    ((statistics.MinValue is not null && CompareValues(predicate.Value, statistics.MinValue) < 0) ||
+                     (statistics.MaxValue is not null && CompareValues(predicate.Value, statistics.MaxValue) > 0)))
+                {
+                    reason = "The equality constant falls outside the row group's min/max range.";
+                    return true;
+                }
+
+                return false;
+
+            case ComparisonOperator.NotEqual:
+                if (predicate.Value is not null &&
+                    statistics.MinValue is not null &&
+                    statistics.MaxValue is not null &&
+                    statistics.NullCount.GetValueOrDefault() == 0 &&
+                    CompareValues(predicate.Value, statistics.MinValue) == 0 &&
+                    CompareValues(predicate.Value, statistics.MaxValue) == 0)
+                {
+                    reason = "All non-null values in the row group are equal to the excluded value.";
+                    return true;
+                }
+
+                return false;
+
+            case ComparisonOperator.LessThan:
+                if (statistics.MinValue is not null && CompareValues(statistics.MinValue, predicate.Value) >= 0)
+                {
+                    reason = "The row group's minimum value is already above the exclusive upper bound.";
+                    return true;
+                }
+
+                return false;
+
+            case ComparisonOperator.LessThanOrEqual:
+                if (statistics.MinValue is not null && CompareValues(statistics.MinValue, predicate.Value) > 0)
+                {
+                    reason = "The row group's minimum value is above the inclusive upper bound.";
+                    return true;
+                }
+
+                return false;
+
+            case ComparisonOperator.GreaterThan:
+                if (statistics.MaxValue is not null && CompareValues(statistics.MaxValue, predicate.Value) <= 0)
+                {
+                    reason = "The row group's maximum value is already below the exclusive lower bound.";
+                    return true;
+                }
+
+                return false;
+
+            case ComparisonOperator.GreaterThanOrEqual:
+                if (statistics.MaxValue is not null && CompareValues(statistics.MaxValue, predicate.Value) < 0)
+                {
+                    reason = "The row group's maximum value is below the inclusive lower bound.";
+                    return true;
+                }
+
+                return false;
+
+            default:
+                return false;
+        }
+    }
+
+    private static int CompareValues(object? left, object? right)
+    {
+        if (left is null || right is null)
+        {
+            throw new InvalidOperationException("Cannot compare null values for statistics pruning.");
+        }
+
+        var targetType = Nullable.GetUnderlyingType(left.GetType()) ?? left.GetType();
+        var convertedRight = PushdownPredicateFactory.ConvertValue(right, targetType);
+
+        if (left is IComparable comparable)
+        {
+            return comparable.CompareTo(convertedRight);
+        }
+
+        throw new NotSupportedException($"Values of type '{targetType}' are not comparable.");
+    }
+
+    private static string? GetOrdinalUpperBound(string prefix)
+    {
+        if (string.IsNullOrEmpty(prefix))
+        {
+            return null;
+        }
+
+        var buffer = prefix.ToCharArray();
+        for (var index = buffer.Length - 1; index >= 0; index--)
+        {
+            if (buffer[index] == char.MaxValue)
+            {
+                continue;
+            }
+
+            buffer[index]++;
+            return new string(buffer, 0, index + 1);
+        }
+
+        return null;
+    }
+}

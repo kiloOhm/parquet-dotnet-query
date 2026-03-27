@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Parquet.Query/Parquet.Query.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Parquet.Query.Tests/Parquet.Query.Tests.csproj" />
+  </Folder>
+</Solution>
