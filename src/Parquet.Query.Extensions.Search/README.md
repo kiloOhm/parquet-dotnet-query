@@ -7,6 +7,6 @@ It currently includes:
 - Lucene-style exact token matching
 - fuzzy token matching with configurable edit distance
 - query extensions that register search-aware predicate planners
-- footer-backed text index helpers for write-time metadata
+- footer-backed text index helpers for `[ParquetLuceneIndex]` columns
 
 This package is intended to complement `kiloOhm.Parquet.Net.Query`, `kiloOhm.Parquet.Net.Query.Extensions.Writing`, and `kiloOhm.Parquet.Net`.

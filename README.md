@@ -133,14 +133,14 @@ This lets extension packages use footer metadata, sidecar indexes, or custom row
 
 The repository now includes a search-focused extension project at `src/Parquet.Query.Extensions.Search` with:
 
-- a `LuceneFooterIndexingStrategy` for `[ParquetExternalIndex("lucene")]` string columns
+- a `LuceneFooterIndexingStrategy` for `[ParquetLuceneIndex]` string columns
 - footer-resident analyzed term dictionaries per row group
 - `LuceneMatch(...)` and `LuceneFuzzy(...)` query extensions backed by custom predicate planning
 
 It also now includes an indexing-focused extension project at `src/Parquet.Query.Extensions.Indexing` with:
 
-- a `FooterHashIndexingStrategy` for `[ParquetExternalIndex("footer-hash")]` string lookup columns
-- a `FooterBitmapIndexingStrategy` for `[ParquetExternalIndex("footer-bitmap")]` low-cardinality equality columns
+- a `FooterHashIndexingStrategy` for `[ParquetFooterHashIndex]` string lookup columns
+- a `FooterBitmapIndexingStrategy` for `[ParquetFooterBitmapIndex]` low-cardinality equality columns
 - `WithFooterIndexes()` query extensions backed by footer-aware equality pruning
 
 It also now includes a pooling-focused extension project at `src/Parquet.Query.Extensions.Pooling` with:

@@ -2,9 +2,10 @@ namespace Parquet.Query.Extensions.Writing.Attributes;
 
 /// <summary>
 /// Requests that an external indexing strategy build an index for the annotated column.
+/// Use one of the built-in derived attributes where available, or this base attribute for custom strategies.
 /// </summary>
 [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field, AllowMultiple = true, Inherited = true)]
-public sealed class ParquetExternalIndexAttribute : Attribute
+public class ParquetExternalIndexAttribute : Attribute
 {
     /// <summary>
     /// Initializes a new external index attribute.
