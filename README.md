@@ -30,6 +30,7 @@ The current implementation focuses on file pruning, row-group pruning, page prun
 - Partition-aware file pruning for directory layouts like `Country=DE/...`
 - Bloom-filter-aware equality pruning when bloom filters are present
 - Extensible predicate planners for custom footer or sidecar indexes
+- Query-plan caching with a default bounded in-memory cache and pluggable custom caches
 - Late materialization for projected queries
 - Nested POCO materialization
 - Nested projection with column pruning
@@ -179,6 +180,32 @@ var rows = await ParquetQuery
 
         return null;
     })
+    .ToListAsync();
+```
+
+## Query Caching
+
+Repeated queries automatically reuse cached planning metadata through a bounded in-memory cache in the core package.
+
+You can disable it per query:
+
+```csharp
+var uncachedRows = await ParquetQuery
+    .FromFile<Person>("people.parquet")
+    .WithoutQueryCache()
+    .Where(row => row.Country == "DE")
+    .ToListAsync();
+```
+
+Or attach your own cache implementation:
+
+```csharp
+IParquetQueryCache cache = new LruParquetQueryCache(capacity: 512);
+
+var rows = await ParquetQuery
+    .FromDirectory<Person>("people")
+    .WithQueryCache(cache)
+    .Where(row => row.Country == "DE")
     .ToListAsync();
 ```
 

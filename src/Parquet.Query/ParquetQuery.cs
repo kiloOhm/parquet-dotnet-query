@@ -77,6 +77,7 @@ public sealed class ParquetQuery<TSource, TResult>
     private readonly IReadOnlyList<PredicatePushdownDiagnostic> _residualPredicates;
     private readonly Expression<Func<TSource, TResult>>? _projection;
     private readonly IParquetReaderFactory _readerFactory;
+    private readonly IParquetQueryCache _queryCache;
     private readonly bool _strictPushdown;
 
     private ParquetQuery(
@@ -88,6 +89,7 @@ public sealed class ParquetQuery<TSource, TResult>
         IReadOnlyList<PredicatePushdownDiagnostic> residualPredicates,
         Expression<Func<TSource, TResult>>? projection,
         IParquetReaderFactory readerFactory,
+        IParquetQueryCache queryCache,
         bool strictPushdown)
     {
         _filePaths = filePaths;
@@ -101,6 +103,7 @@ public sealed class ParquetQuery<TSource, TResult>
         _residualPredicates = residualPredicates;
         _projection = projection;
         _readerFactory = readerFactory ?? throw new ArgumentNullException(nameof(readerFactory));
+        _queryCache = queryCache ?? throw new ArgumentNullException(nameof(queryCache));
         _strictPushdown = strictPushdown;
     }
 
@@ -135,6 +138,7 @@ public sealed class ParquetQuery<TSource, TResult>
             Array.Empty<PredicatePushdownDiagnostic>(),
             projection: null,
             FileParquetReaderFactory.Instance,
+            DefaultParquetQueryCache.Instance,
             strictPushdown: false);
     }
 
@@ -156,6 +160,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _residualPredicates,
             _projection,
             _readerFactory,
+            _queryCache,
             _strictPushdown);
     }
 
@@ -187,6 +192,7 @@ public sealed class ParquetQuery<TSource, TResult>
             new ReadOnlyCollection<PredicatePushdownDiagnostic>(_residualPredicates.Concat(split.Diagnostics).ToArray()),
             _projection,
             _readerFactory,
+            _queryCache,
             _strictPushdown);
     }
 
@@ -209,6 +215,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _residualPredicates,
             projection,
             _readerFactory,
+            _queryCache,
             _strictPushdown);
     }
 
@@ -227,6 +234,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _residualPredicates,
             _projection,
             _readerFactory,
+            _queryCache,
             enabled);
 
     /// <summary>
@@ -263,6 +271,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _residualPredicates,
             _projection,
             _readerFactory,
+            _queryCache,
             _strictPushdown);
     }
 
@@ -284,6 +293,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _residualPredicates,
             _projection,
             _readerFactory,
+            _queryCache,
             _strictPushdown);
     }
 
@@ -317,8 +327,35 @@ public sealed class ParquetQuery<TSource, TResult>
             _residualPredicates,
             _projection,
             readerFactory,
+            _queryCache,
             _strictPushdown);
     }
+
+    /// <summary>
+    /// Routes query planning through a custom cache.
+    /// </summary>
+    public ParquetQuery<TSource, TResult> WithQueryCache(IParquetQueryCache queryCache)
+    {
+        ArgumentNullException.ThrowIfNull(queryCache);
+
+        return new ParquetQuery<TSource, TResult>(
+            _filePaths,
+            _parquetOptions,
+            _pushdownFilter,
+            _predicatePlanners,
+            _wherePredicates,
+            _residualPredicates,
+            _projection,
+            _readerFactory,
+            queryCache,
+            _strictPushdown);
+    }
+
+    /// <summary>
+    /// Disables query-plan caching for this query pipeline.
+    /// </summary>
+    public ParquetQuery<TSource, TResult> WithoutQueryCache() =>
+        WithQueryCache(NullParquetQueryCache.Instance);
 
     /// <summary>
     /// Configures footer encryption for all queried files.
@@ -390,7 +427,7 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <returns>The computed query plan.</returns>
     public async Task<ParquetQueryPlan> PlanAsync(CancellationToken cancellationToken = default)
     {
-        var executionPlan = await BuildExecutionPlanAsync(cancellationToken);
+        var executionPlan = await GetExecutionPlanAsync(cancellationToken);
         return executionPlan.QueryPlan;
     }
 
@@ -401,7 +438,7 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <returns>A textual explanation of the query.</returns>
     public async Task<string> ExplainAsync(CancellationToken cancellationToken = default)
     {
-        var executionPlan = await BuildExecutionPlanAsync(cancellationToken);
+        var executionPlan = await GetExecutionPlanAsync(cancellationToken);
         var plan = executionPlan.QueryPlan;
         var builder = new StringBuilder();
 
@@ -483,7 +520,7 @@ public sealed class ParquetQuery<TSource, TResult>
     {
         if (_pushdownFilter.IsEmpty && _wherePredicates.Count == 0)
         {
-            var executionPlan = await BuildExecutionPlanAsync(cancellationToken, countOnly: true);
+            var executionPlan = await GetExecutionPlanAsync(cancellationToken, countOnly: true);
             return executionPlan.Files
                 .Where(file => file.FilePlan.ShouldRead)
                 .Sum(file => file.FilePlan.RowGroups.Where(rowGroup => rowGroup.ShouldRead).Sum(rowGroup => rowGroup.RowCount));
@@ -515,7 +552,7 @@ public sealed class ParquetQuery<TSource, TResult>
     {
         if (_pushdownFilter.IsEmpty && _wherePredicates.Count == 0)
         {
-            var executionPlan = await BuildExecutionPlanAsync(cancellationToken, countOnly: true);
+            var executionPlan = await GetExecutionPlanAsync(cancellationToken, countOnly: true);
             return executionPlan.Files.Any(file =>
                 file.FilePlan.ShouldRead &&
                 file.FilePlan.RowGroups.Any(rowGroup => rowGroup.ShouldRead && rowGroup.RowCount > 0));
@@ -805,34 +842,49 @@ public sealed class ParquetQuery<TSource, TResult>
         bool countOnly,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        EnsureStrictPushdown();
-
         var serializerOptions = CreateSerializerOptions();
+        var executionPlan = await GetExecutionPlanAsync(cancellationToken, countOnly).ConfigureAwait(false);
 
-        foreach (var filePath in _filePaths)
+        foreach (var executionFilePlan in executionPlan.Files)
         {
-            var fileDecisions = PartitionPruner.Evaluate(filePath, _pushdownFilter.Predicates);
-            if (fileDecisions.Any(decision => !decision.MayMatch))
-            {
-                continue;
-            }
-
-            await using var readerLease = await _readerFactory.RentAsync(filePath, _parquetOptions, cancellationToken).ConfigureAwait(false);
-            var reader = readerLease.Reader;
-            var executionFilePlan = await BuildReadableExecutionFilePlanAsync(filePath, fileDecisions, reader, countOnly, cancellationToken);
             if (!executionFilePlan.FilePlan.ShouldRead || executionFilePlan.MaterializationPlan is null)
             {
                 continue;
             }
 
+            await using var readerLease = await _readerFactory.RentAsync(executionFilePlan.FilePath, _parquetOptions, cancellationToken).ConfigureAwait(false);
+            var reader = readerLease.Reader;
             yield return new OpenQueryExecutionFile<TSource>(executionFilePlan, reader, serializerOptions);
         }
     }
 
-    private async Task<QueryExecutionPlan<TSource>> BuildExecutionPlanAsync(CancellationToken cancellationToken, bool countOnly = false)
+    private async Task<QueryExecutionPlan<TSource>> GetExecutionPlanAsync(CancellationToken cancellationToken, bool countOnly = false)
     {
         EnsureStrictPushdown();
 
+        var cacheKey = ParquetQueryCacheKeyBuilder.Build(
+            _filePaths,
+            _parquetOptions,
+            _pushdownFilter,
+            _predicatePlanners,
+            _wherePredicates,
+            _projection,
+            _readerFactory,
+            countOnly);
+
+        var cached = await _queryCache.GetAsync(cacheKey, cancellationToken).ConfigureAwait(false);
+        if (cached is QueryExecutionPlan<TSource> executionPlan)
+        {
+            return executionPlan;
+        }
+
+        var builtPlan = await BuildExecutionPlanCoreAsync(cancellationToken, countOnly).ConfigureAwait(false);
+        await _queryCache.SetAsync(cacheKey, builtPlan, cancellationToken).ConfigureAwait(false);
+        return builtPlan;
+    }
+
+    private async Task<QueryExecutionPlan<TSource>> BuildExecutionPlanCoreAsync(CancellationToken cancellationToken, bool countOnly = false)
+    {
         var files = new List<QueryExecutionFilePlan<TSource>>(_filePaths.Count);
         var filePlans = new List<QueryFilePlan>(_filePaths.Count);
         var readColumns = new HashSet<string>(StringComparer.Ordinal);

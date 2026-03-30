@@ -10,7 +10,7 @@
     <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\Parquet.Query.xml</DocumentationFile>
     <DebugType>full</DebugType>
     <DebugSymbols>true</DebugSymbols>
-    <PackageTags>apache parquet dotnet net c# query pushdown pruning projection analytics</PackageTags>
+    <PackageTags>apache parquet dotnet net c# query pushdown pruning projection analytics cache caching lru</PackageTags>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
@@ -21,7 +21,7 @@
     <RepositoryUrl>https://github.com/kiloOhm/parquet-dotnet-query</RepositoryUrl>
     <RepositoryType>GitHub</RepositoryType>
     <PackageIcon>icon.png</PackageIcon>
-    <Description>Query layer for Apache Parquet with explicit predicate pushdown, pruning, and projection on top of kiloOhm.Parquet.Net.</Description>
+    <Description>Query layer for Apache Parquet with explicit predicate pushdown, pruning, projection, and reusable query-plan caching on top of kiloOhm.Parquet.Net.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
