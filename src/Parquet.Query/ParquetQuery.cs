@@ -76,6 +76,7 @@ public sealed class ParquetQuery<TSource, TResult>
     private readonly Lazy<Func<TSource, bool>[]> _compiledWherePredicates;
     private readonly IReadOnlyList<PredicatePushdownDiagnostic> _residualPredicates;
     private readonly Expression<Func<TSource, TResult>>? _projection;
+    private readonly IParquetReaderFactory _readerFactory;
     private readonly bool _strictPushdown;
 
     private ParquetQuery(
@@ -86,6 +87,7 @@ public sealed class ParquetQuery<TSource, TResult>
         IReadOnlyList<Expression<Func<TSource, bool>>> wherePredicates,
         IReadOnlyList<PredicatePushdownDiagnostic> residualPredicates,
         Expression<Func<TSource, TResult>>? projection,
+        IParquetReaderFactory readerFactory,
         bool strictPushdown)
     {
         _filePaths = filePaths;
@@ -98,6 +100,7 @@ public sealed class ParquetQuery<TSource, TResult>
             isThreadSafe: true);
         _residualPredicates = residualPredicates;
         _projection = projection;
+        _readerFactory = readerFactory ?? throw new ArgumentNullException(nameof(readerFactory));
         _strictPushdown = strictPushdown;
     }
 
@@ -131,6 +134,7 @@ public sealed class ParquetQuery<TSource, TResult>
             Array.Empty<Expression<Func<TSource, bool>>>(),
             Array.Empty<PredicatePushdownDiagnostic>(),
             projection: null,
+            FileParquetReaderFactory.Instance,
             strictPushdown: false);
     }
 
@@ -151,6 +155,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _wherePredicates,
             _residualPredicates,
             _projection,
+            _readerFactory,
             _strictPushdown);
     }
 
@@ -181,6 +186,7 @@ public sealed class ParquetQuery<TSource, TResult>
             new ReadOnlyCollection<Expression<Func<TSource, bool>>>(_wherePredicates.Concat(new[] { predicate }).ToArray()),
             new ReadOnlyCollection<PredicatePushdownDiagnostic>(_residualPredicates.Concat(split.Diagnostics).ToArray()),
             _projection,
+            _readerFactory,
             _strictPushdown);
     }
 
@@ -202,6 +208,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _wherePredicates,
             _residualPredicates,
             projection,
+            _readerFactory,
             _strictPushdown);
     }
 
@@ -219,6 +226,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _wherePredicates,
             _residualPredicates,
             _projection,
+            _readerFactory,
             enabled);
 
     /// <summary>
@@ -254,6 +262,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _wherePredicates,
             _residualPredicates,
             _projection,
+            _readerFactory,
             _strictPushdown);
     }
 
@@ -274,6 +283,7 @@ public sealed class ParquetQuery<TSource, TResult>
             _wherePredicates,
             _residualPredicates,
             _projection,
+            _readerFactory,
             _strictPushdown);
     }
 
@@ -289,6 +299,25 @@ public sealed class ParquetQuery<TSource, TResult>
         var options = ParquetOptionsFactory.Clone(_parquetOptions);
         configure(options);
         return WithParquetOptions(options);
+    }
+
+    /// <summary>
+    /// Routes parquet reader creation through a custom reader factory.
+    /// </summary>
+    public ParquetQuery<TSource, TResult> WithReaderFactory(IParquetReaderFactory readerFactory)
+    {
+        ArgumentNullException.ThrowIfNull(readerFactory);
+
+        return new ParquetQuery<TSource, TResult>(
+            _filePaths,
+            _parquetOptions,
+            _pushdownFilter,
+            _predicatePlanners,
+            _wherePredicates,
+            _residualPredicates,
+            _projection,
+            readerFactory,
+            _strictPushdown);
     }
 
     /// <summary>
@@ -788,8 +817,8 @@ public sealed class ParquetQuery<TSource, TResult>
                 continue;
             }
 
-            await using var stream = System.IO.File.OpenRead(filePath);
-            using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
+            await using var readerLease = await _readerFactory.RentAsync(filePath, _parquetOptions, cancellationToken).ConfigureAwait(false);
+            var reader = readerLease.Reader;
             var executionFilePlan = await BuildReadableExecutionFilePlanAsync(filePath, fileDecisions, reader, countOnly, cancellationToken);
             if (!executionFilePlan.FilePlan.ShouldRead || executionFilePlan.MaterializationPlan is null)
             {
@@ -859,8 +888,8 @@ public sealed class ParquetQuery<TSource, TResult>
             return new QueryExecutionFilePlan<TSource>(filePath, skippedPlan, materializationPlan: null);
         }
 
-        await using var stream = System.IO.File.OpenRead(filePath);
-        using var reader = await ParquetReader.CreateAsync(stream, _parquetOptions, leaveStreamOpen: false, cancellationToken);
+        await using var readerLease = await _readerFactory.RentAsync(filePath, _parquetOptions, cancellationToken).ConfigureAwait(false);
+        var reader = readerLease.Reader;
         return await BuildReadableExecutionFilePlanAsync(filePath, fileDecisions, reader, countOnly, cancellationToken);
     }
 

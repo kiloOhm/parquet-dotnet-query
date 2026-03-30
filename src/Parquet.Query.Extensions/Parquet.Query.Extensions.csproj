@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Company>kiloOhm</Company>
+    <PackageId>kiloOhm.Parquet.Net.Query.Extensions</PackageId>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <PackageTags>apache parquet dotnet net c# query extensions meta-package umbrella indexing search writing pooling</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>false</IncludeSymbols>
+    <Authors>Lukas Wicke (@kiloOhm)</Authors>
+    <Product>parquet-dotnet-query</Product>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/kiloOhm/parquet-dotnet-query</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/kiloOhm/parquet-dotnet-query</RepositoryUrl>
+    <RepositoryType>GitHub</RepositoryType>
+    <PackageIcon>icon.png</PackageIcon>
+    <Description>Convenience meta-package for parquet-dotnet-query that installs the core query package together with the writing, indexing, search, and pooling extensions.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <NoPackageAnalysis>true</NoPackageAnalysis>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Parquet.Query\Parquet.Query.csproj" />
+    <ProjectReference Include="..\Parquet.Query.Extensions.Writing\Parquet.Query.Extensions.Writing.csproj" />
+    <ProjectReference Include="..\Parquet.Query.Extensions.Indexing\Parquet.Query.Extensions.Indexing.csproj" />
+    <ProjectReference Include="..\Parquet.Query.Extensions.Search\Parquet.Query.Extensions.Search.csproj" />
+    <ProjectReference Include="..\Parquet.Query.Extensions.Pooling\Parquet.Query.Extensions.Pooling.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md">
+      <Pack>true</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Include="..\icon.png">
+      <Pack>true</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+
+</Project>

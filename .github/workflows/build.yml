@@ -79,6 +79,9 @@ jobs:
       - name: Collect artifacts
         run: |
           mkdir artifacts
+          cp src/Parquet.Query.Extensions/bin/Release/*.nupkg artifacts/
+          cp src/Parquet.Query.Extensions.Indexing/bin/Release/*.nupkg artifacts/
+          cp src/Parquet.Query.Extensions.Pooling/bin/Release/*.nupkg artifacts/
           cp src/Parquet.Query/bin/Release/*.nupkg artifacts/
           cp src/Parquet.Query.Extensions.Search/bin/Release/*.nupkg artifacts/
           cp src/Parquet.Query.Extensions.Writing/bin/Release/*.nupkg artifacts/

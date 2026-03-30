@@ -11,6 +11,8 @@
     <File Path=".github/workflows/build.yml" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/Parquet.Query.Extensions/Parquet.Query.Extensions.csproj" />
+    <Project Path="src/Parquet.Query.Extensions.Pooling/Parquet.Query.Extensions.Pooling.csproj" />
     <Project Path="src/Parquet.Query.Extensions.Indexing/Parquet.Query.Extensions.Indexing.csproj" />
     <Project Path="src/Parquet.Query/Parquet.Query.csproj" />
     <Project Path="src/Parquet.Query.Extensions.Search/Parquet.Query.Extensions.Search.csproj" />

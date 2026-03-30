@@ -29,6 +29,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Parquet.Query.Extensions.Pooling\Parquet.Query.Extensions.Pooling.csproj" />
     <ProjectReference Include="..\..\src\Parquet.Query.Extensions.Indexing\Parquet.Query.Extensions.Indexing.csproj" />
     <ProjectReference Include="..\..\src\Parquet.Query\Parquet.Query.csproj" />
     <ProjectReference Include="..\..\src\Parquet.Query.Extensions.Search\Parquet.Query.Extensions.Search.csproj" />

@@ -2,6 +2,15 @@
 
 `parquet-dotnet-query` is a small query layer for Parquet files built on top of [`kiloOhm.Parquet.Net`](https://www.nuget.org/packages/kiloOhm.Parquet.Net/).
 
+NuGet packages:
+
+- `kiloOhm.Parquet.Net.Query` for the core query engine
+- `kiloOhm.Parquet.Net.Query.Extensions.Writing` for write-side metadata helpers
+- `kiloOhm.Parquet.Net.Query.Extensions.Indexing` for footer-backed equality indexes
+- `kiloOhm.Parquet.Net.Query.Extensions.Search` for footer-backed text search
+- `kiloOhm.Parquet.Net.Query.Extensions.Pooling` for reusable reader pooling
+- `kiloOhm.Parquet.Net.Query.Extensions` as a convenience umbrella package for the full stack
+
 It keeps Parquet-specific optimizations explicit:
 
 - `Pushdown(...)` for predicates that should participate in parquet pruning
@@ -132,6 +141,15 @@ It also now includes an indexing-focused extension project at `src/Parquet.Query
 - a `FooterHashIndexingStrategy` for `[ParquetExternalIndex("footer-hash")]` string lookup columns
 - a `FooterBitmapIndexingStrategy` for `[ParquetExternalIndex("footer-bitmap")]` low-cardinality equality columns
 - `WithFooterIndexes()` query extensions backed by footer-aware equality pruning
+
+It also now includes a pooling-focused extension project at `src/Parquet.Query.Extensions.Pooling` with:
+
+- a `ParquetReaderPool` that reuses open readers per file
+- `PrewarmAsync(...)` helpers so pools can be filled before queries arrive
+- `BlockFileAsync(...)` helpers for coordinated file replacement
+- `WithReaderPool()` query extensions that route query execution through the pool
+
+If you want the full extension set in one install, use `kiloOhm.Parquet.Net.Query.Extensions`, which brings in the core query package plus writing, indexing, search, and pooling.
 
 ## Encryption Support
 
