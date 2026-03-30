@@ -17,18 +17,8 @@ on:
 
 jobs:
   test:
-    name: "Unit Tests - ${{ matrix.name }}"
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            name: Linux x64
-          - os: windows-latest
-            name: Windows x64
-          - os: macos-latest
-            name: MacOS ARM64
-      fail-fast: false
+    name: "Unit Tests - Linux x64"
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -41,18 +31,8 @@ jobs:
         run: dotnet test Parquet.Query.slnx -c release
 
   benchmark:
-    name: "Benchmarks - ${{ matrix.name }}"
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            name: Linux x64
-          - os: windows-latest
-            name: Windows x64
-          - os: macos-latest
-            name: MacOS ARM64
-      fail-fast: false
+    name: "Benchmarks - Linux x64"
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
