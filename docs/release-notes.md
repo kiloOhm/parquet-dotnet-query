@@ -1,3 +1,8 @@
+# 0.1.0-preview.4
+
+- Switch release and package-fallback builds to `kiloOhm.Parquet.Net 5.6.0-pre.3--kiloOhm.5` for both `net8.0` and `net48`, so CI and published packages use the fork that now ships the required page index, encryption, and footer APIs.
+- Fix the `net48` sparse-page compatibility path to avoid compile-time dependency on `ParquetDataPage` when the fallback package does not expose that type and cleanly fall back to dense reads instead.
+
 # 0.1.0-preview.3
 
 - Add `net48` support across `kiloOhm.Parquet.Net.Query` and all published extension packages while keeping `net8.0` support in place.

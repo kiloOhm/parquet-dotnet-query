@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup Condition="'$(Version)' == '' and '$(MSBuildProjectName)' != 'Parquet.Query.Tests'">
-    <Version>0.1.0-preview.3</Version>
+    <Version>0.1.0-preview.4</Version>
   </PropertyGroup>
 
   <PropertyGroup Condition="$([System.String]::Copy('$(MSBuildProjectName)').StartsWith('Parquet.Query'))">

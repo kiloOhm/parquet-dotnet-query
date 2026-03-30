@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup Condition="!Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj') or '$(Configuration)' == 'Release'">
-    <PackageReference Include="kiloOhm.Parquet.Net" Version="5.6.0-pre.3--kiloOhm.4" />
+    <PackageReference Include="kiloOhm.Parquet.Net" Version="5.6.0-pre.3--kiloOhm.5" />
   </ItemGroup>
 
   <ItemGroup>

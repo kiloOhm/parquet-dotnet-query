@@ -279,7 +279,11 @@ internal static class PartialRowMaterializer<TSource>
         SourceColumnBinding<TSource> binding,
         IReadOnlyList<TSource> rows,
         IReadOnlyList<int> rowIndexes,
+#if NET48
+        IReadOnlyList<SparsePageData> pages)
+#else
         IReadOnlyList<ParquetDataPage> pages)
+#endif
     {
         var denseIndex = 0;
         foreach (var page in pages)
@@ -328,7 +332,11 @@ internal static class PartialRowMaterializer<TSource>
     private static void CopySparseValues(
         object?[] target,
         IReadOnlyList<int> rowIndexes,
+#if NET48
+        IReadOnlyList<SparsePageData> pages)
+#else
         IReadOnlyList<ParquetDataPage> pages)
+#endif
     {
         var denseIndex = 0;
         foreach (var page in pages)
@@ -361,7 +369,13 @@ internal static class PartialRowMaterializer<TSource>
         }
     }
 
-    private static async Task<IReadOnlyList<ParquetDataPage>?> TryReadSparsePagesAsync(
+    private static async Task<
+#if NET48
+        IReadOnlyList<SparsePageData>?
+#else
+        IReadOnlyList<ParquetDataPage>?
+#endif
+        > TryReadSparsePagesAsync(
         IParquetRowGroupReader rowGroupReader,
         DataField field,
         IReadOnlyList<RowInterval> rowIntervals,
@@ -387,7 +401,11 @@ internal static class PartialRowMaterializer<TSource>
         var pageOrdinals = PagePruner.SelectPageOrdinals(offsetIndex, rowIntervals, rowGroupReader.RowCount);
         if (pageOrdinals.Count == 0)
         {
+#if NET48
+            return Array.Empty<SparsePageData>();
+#else
             return Array.Empty<ParquetDataPage>();
+#endif
         }
 
 #if NET48
@@ -417,7 +435,7 @@ internal static class PartialRowMaterializer<TSource>
         return await AwaitTaskResultAsync(openMethod.Invoke(rowGroupReader, new object?[] { field, cancellationToken })).ConfigureAwait(false);
     }
 
-    private static async Task<IReadOnlyList<ParquetDataPage>?> ReadPagesCompatAsync(
+    private static async Task<IReadOnlyList<SparsePageData>?> ReadPagesCompatAsync(
         object pageReader,
         IReadOnlyList<int> pageOrdinals,
         CancellationToken cancellationToken)
@@ -440,14 +458,23 @@ internal static class PartialRowMaterializer<TSource>
         }
 
         var result = await AwaitTaskResultAsync(readMethod.Invoke(pageReader, new object?[] { pageOrdinals, cancellationToken })).ConfigureAwait(false);
-        if (result is IReadOnlyList<ParquetDataPage> pages)
+        if (result is not System.Collections.IEnumerable enumerable)
         {
-            return pages;
+            return null;
         }
 
-        return result is IEnumerable<ParquetDataPage> enumerable
-            ? enumerable.ToArray()
-            : null;
+        var pages = new List<SparsePageData>();
+        foreach (var page in enumerable)
+        {
+            if (!TryCreateSparsePageData(page, out SparsePageData? sparsePage))
+            {
+                return null;
+            }
+
+            pages.Add(sparsePage!);
+        }
+
+        return pages;
     }
 
     private static async Task<object?> AwaitTaskResultAsync(object? taskLike)
@@ -459,6 +486,27 @@ internal static class PartialRowMaterializer<TSource>
 
         await task.ConfigureAwait(false);
         return taskLike.GetType().GetProperty("Result", BindingFlags.Instance | BindingFlags.Public)?.GetValue(taskLike);
+    }
+
+    private static bool TryCreateSparsePageData(object? page, out SparsePageData? sparsePage)
+    {
+        sparsePage = null;
+        if (page is null)
+        {
+            return false;
+        }
+
+        var pageType = page.GetType();
+        var location = pageType.GetProperty("Location", BindingFlags.Instance | BindingFlags.Public)?.GetValue(page) as PageLocation;
+        var rowCountObject = pageType.GetProperty("RowCount", BindingFlags.Instance | BindingFlags.Public)?.GetValue(page);
+        var column = pageType.GetProperty("Column", BindingFlags.Instance | BindingFlags.Public)?.GetValue(page) as Parquet.Data.DataColumn;
+        if (location is null || column is null || rowCountObject is null)
+        {
+            return false;
+        }
+
+        sparsePage = new SparsePageData(location, Convert.ToInt64(rowCountObject), column);
+        return true;
     }
 #endif
 
@@ -503,6 +551,24 @@ internal static class PartialRowMaterializer<TSource>
 
         return rows;
     }
+
+#if NET48
+    private sealed class SparsePageData
+    {
+        public SparsePageData(PageLocation location, long rowCount, Parquet.Data.DataColumn column)
+        {
+            Location = location;
+            RowCount = rowCount;
+            Column = column;
+        }
+
+        public PageLocation Location { get; }
+
+        public long RowCount { get; }
+
+        public Parquet.Data.DataColumn Column { get; }
+    }
+#endif
 }
 
 internal sealed class MaterializedRowSet<TSource>
