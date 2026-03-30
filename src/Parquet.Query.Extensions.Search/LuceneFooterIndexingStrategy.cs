@@ -23,8 +23,15 @@ public sealed class LuceneFooterIndexingStrategy : IParquetIndexingStrategy
         ParquetIndexDescriptor descriptor,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(context);
-        ArgumentNullException.ThrowIfNull(descriptor);
+        if (context is null)
+        {
+            throw new ArgumentNullException(nameof(context));
+        }
+
+        if (descriptor is null)
+        {
+            throw new ArgumentNullException(nameof(descriptor));
+        }
 
         var index = await BuildIndexAsync(context.FilePath, descriptor.ColumnPath, cancellationToken).ConfigureAwait(false);
         var metadataKey = LuceneFooterIndexStorage.GetMetadataKey(descriptor.ColumnPath);
@@ -37,7 +44,7 @@ public sealed class LuceneFooterIndexingStrategy : IParquetIndexingStrategy
         string columnPath,
         CancellationToken cancellationToken)
     {
-        await using var stream = System.IO.File.OpenRead(filePath);
+        using var stream = System.IO.File.OpenRead(filePath);
         using var reader = await Parquet.ParquetReader.CreateAsync(stream, leaveStreamOpen: false, cancellationToken: cancellationToken).ConfigureAwait(false);
 
         var dataField = reader.Schema.GetDataFields()

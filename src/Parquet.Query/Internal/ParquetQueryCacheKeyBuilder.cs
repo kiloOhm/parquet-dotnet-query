@@ -1,5 +1,4 @@
 using System.Runtime.CompilerServices;
-using System.Security.Cryptography;
 using System.Text;
 using System.Linq.Expressions;
 using Parquet.Query.Planning;
@@ -66,7 +65,7 @@ internal static class ParquetQueryCacheKeyBuilder
             builder.Append(';');
         }
 
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString())));
+        return HashingCompatibility.Sha256Hex(builder.ToString());
     }
 
     private static void AppendFile(StringBuilder builder, string filePath)

@@ -24,7 +24,7 @@ internal static class SourceMaterializationPlanBuilder
         bool includeDefaultResultPaths)
         where TSource : class, new()
     {
-        ArgumentNullException.ThrowIfNull(schema);
+        Guard.NotNull(schema, nameof(schema));
 
         HashSet<string> resultMemberPaths;
         if (projection is null)
@@ -181,7 +181,7 @@ internal static class SourceMaterializationPlanBuilder
             return false;
         }
 
-        var leafType = GetMemberType(chain[^1]);
+        var leafType = GetMemberType(chain[chain.Count - 1]);
         return IsPredicateLeaf(leafType);
     }
 
@@ -192,7 +192,7 @@ internal static class SourceMaterializationPlanBuilder
             throw new NotSupportedException($"Projection member path '{memberPath}' could not be resolved on '{rootType.Name}'.");
         }
 
-        var leafType = GetMemberType(chain[^1]);
+        var leafType = GetMemberType(chain[chain.Count - 1]);
         if (IsMaterializableLeaf(leafType))
         {
             return new[] { memberPath };
@@ -256,7 +256,7 @@ internal static class SourceMaterializationPlanBuilder
             columnPath!,
             BuildAssigner<TSource>(chain),
             BuildReader<TSource>(chain),
-            requiresFullRowRead: TryGetCollectionElementType(GetMemberType(chain[^1]), out _));
+            requiresFullRowRead: TryGetCollectionElementType(GetMemberType(chain[chain.Count - 1]), out _));
         return true;
     }
 
@@ -325,7 +325,7 @@ internal static class SourceMaterializationPlanBuilder
                 current = next;
             }
 
-            var leaf = chain[^1];
+            var leaf = chain[chain.Count - 1];
             SetValue(current, leaf, value);
         };
     }
@@ -388,7 +388,7 @@ internal static class SourceMaterializationPlanBuilder
     {
         var members = new List<MemberInfo>();
         var currentType = rootType;
-        foreach (var segment in memberPath.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        foreach (var segment in memberPath.Split(new[] { '.' }, StringSplitOptions.RemoveEmptyEntries))
         {
             var member = GetReadableMembers(currentType)
                 .FirstOrDefault(candidate => string.Equals(candidate.Name, segment, StringComparison.Ordinal));

@@ -30,7 +30,7 @@ internal static class PushdownPredicateFactory
         Expression<Func<T, string?>> selector,
         string prefix)
     {
-        ArgumentNullException.ThrowIfNull(prefix);
+        Guard.NotNull(prefix, nameof(prefix));
 
         var path = ColumnPathResolver.FromLambda(selector);
         var body = Expression.Call(

@@ -37,7 +37,7 @@ public sealed class PushdownFilter<T>
     /// <returns>A new filter that contains predicates from both filters.</returns>
     public PushdownFilter<T> And(PushdownFilter<T> other)
     {
-        ArgumentNullException.ThrowIfNull(other);
+        Guard.NotNull(other, nameof(other));
         return new PushdownFilter<T>(Predicates.Concat(other.Predicates));
     }
 

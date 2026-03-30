@@ -10,14 +10,14 @@ internal sealed class NullParquetQueryCache : IParquetQueryCache
 
     public ValueTask<object?> GetAsync(string key, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        return ValueTask.FromResult<object?>(null);
+        Guard.NotNullOrWhiteSpace(key, nameof(key));
+        return ValueTaskCompatibility.FromResult<object?>(null);
     }
 
     public ValueTask SetAsync(string key, object value, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        ArgumentNullException.ThrowIfNull(value);
-        return ValueTask.CompletedTask;
+        Guard.NotNullOrWhiteSpace(key, nameof(key));
+        Guard.NotNull(value, nameof(value));
+        return ValueTaskCompatibility.CompletedTask;
     }
 }

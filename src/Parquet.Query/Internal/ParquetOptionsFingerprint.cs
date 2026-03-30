@@ -27,9 +27,9 @@ internal static class ParquetOptionsFingerprint
         Append(builder, nameof(options.UseBigDecimal), options.UseBigDecimal);
         Append(builder, nameof(options.UsePlaintextFooter), options.UsePlaintextFooter);
         Append(builder, nameof(options.FooterEncryptionKey), options.FooterEncryptionKey);
-        Append(builder, nameof(options.FooterEncryptionKeyMetadata), Convert.ToHexString(options.FooterEncryptionKeyMetadata ?? Array.Empty<byte>()));
+        Append(builder, nameof(options.FooterEncryptionKeyMetadata), HexEncoding.ToHexString(options.FooterEncryptionKeyMetadata ?? Array.Empty<byte>()));
         Append(builder, nameof(options.FooterSigningKey), options.FooterSigningKey);
-        Append(builder, nameof(options.FooterSigningKeyMetadata), Convert.ToHexString(options.FooterSigningKeyMetadata ?? Array.Empty<byte>()));
+        Append(builder, nameof(options.FooterSigningKeyMetadata), HexEncoding.ToHexString(options.FooterSigningKeyMetadata ?? Array.Empty<byte>()));
         Append(builder, nameof(options.AADPrefix), options.AADPrefix);
         Append(builder, nameof(options.SupplyAadPrefix), options.SupplyAadPrefix);
         Append(builder, nameof(options.UseCtrVariant), options.UseCtrVariant);
@@ -41,7 +41,7 @@ internal static class ParquetOptionsFingerprint
 
         foreach (var entry in options.ColumnKeys.OrderBy(entry => entry.Key, StringComparer.Ordinal))
         {
-            Append(builder, $"column:{entry.Key}", $"{entry.Value.Key}|{Convert.ToHexString(entry.Value.KeyMetadata ?? Array.Empty<byte>())}");
+            Append(builder, $"column:{entry.Key}", $"{entry.Value.Key}|{HexEncoding.ToHexString(entry.Value.KeyMetadata ?? Array.Empty<byte>())}");
         }
 
         if (options.ColumnKeyResolver is not null)

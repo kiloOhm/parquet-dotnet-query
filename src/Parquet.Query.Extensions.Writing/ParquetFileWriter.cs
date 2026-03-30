@@ -25,8 +25,8 @@ public static class ParquetFileWriter
         ParquetSerializerOptions? serializerOptions = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(rows);
-        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        Guard.NotNull(rows, nameof(rows));
+        Guard.NotNullOrWhiteSpace(filePath, nameof(filePath));
 
         return WriteCoreAsync(rows, filePath, indexingStrategies, serializerOptions, cancellationToken);
     }
@@ -59,9 +59,9 @@ public static class ParquetFileWriter
         IEnumerable<IParquetIndexingStrategy>? indexingStrategies = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(rows);
-        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
-        ArgumentNullException.ThrowIfNull(writePlan);
+        Guard.NotNull(rows, nameof(rows));
+        Guard.NotNullOrWhiteSpace(filePath, nameof(filePath));
+        Guard.NotNull(writePlan, nameof(writePlan));
 
         await ParquetSerializer.SerializeAsync(rows, filePath, writePlan.CreateSerializerOptions(), cancellationToken).ConfigureAwait(false);
 

@@ -15,7 +15,7 @@ internal sealed class FileParquetReaderFactory : IParquetReaderFactory
         ParquetOptions? parquetOptions = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        Guard.NotNullOrWhiteSpace(filePath, nameof(filePath));
 
         var stream = System.IO.File.OpenRead(filePath);
         try
@@ -29,7 +29,7 @@ internal sealed class FileParquetReaderFactory : IParquetReaderFactory
         }
         catch
         {
-            await stream.DisposeAsync().ConfigureAwait(false);
+            await AsyncCompatibility.DisposeAsync(stream).ConfigureAwait(false);
             throw;
         }
     }
@@ -56,7 +56,7 @@ internal sealed class FileParquetReaderFactory : IParquetReaderFactory
 
             _disposed = true;
             Reader.Dispose();
-            await _stream.DisposeAsync().ConfigureAwait(false);
+            await AsyncCompatibility.DisposeAsync(_stream).ConfigureAwait(false);
         }
     }
 }

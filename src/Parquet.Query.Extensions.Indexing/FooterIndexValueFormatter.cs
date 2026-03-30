@@ -79,16 +79,15 @@ internal static class FooterIndexValueFormatter
 
     public static int GetBucket(string value, int bucketCount)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bucketCount);
+        if (bucketCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(bucketCount));
+        }
 
         const ulong offsetBasis = 14695981039346656037;
         const ulong prime = 1099511628211;
 
-        var byteCount = Encoding.UTF8.GetByteCount(value);
-        Span<byte> buffer = byteCount <= 256
-            ? stackalloc byte[byteCount]
-            : new byte[byteCount];
-        Encoding.UTF8.GetBytes(value, buffer);
+        var buffer = Encoding.UTF8.GetBytes(value);
 
         ulong hash = offsetBasis;
         foreach (var current in buffer)

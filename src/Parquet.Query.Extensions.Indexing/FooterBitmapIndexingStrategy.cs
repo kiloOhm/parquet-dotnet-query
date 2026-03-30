@@ -41,8 +41,15 @@ public sealed class FooterBitmapIndexingStrategy : IParquetIndexingStrategy
         ParquetIndexDescriptor descriptor,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(context);
-        ArgumentNullException.ThrowIfNull(descriptor);
+        if (context is null)
+        {
+            throw new ArgumentNullException(nameof(context));
+        }
+
+        if (descriptor is null)
+        {
+            throw new ArgumentNullException(nameof(descriptor));
+        }
 
         var index = await BuildIndexAsync(context.FilePath, descriptor.ColumnPath, MaxDistinctValues, cancellationToken).ConfigureAwait(false);
         var metadataKey = FooterIndexStorage.GetBitmapMetadataKey(descriptor.ColumnPath);
@@ -56,7 +63,7 @@ public sealed class FooterBitmapIndexingStrategy : IParquetIndexingStrategy
         int maxDistinctValues,
         CancellationToken cancellationToken)
     {
-        await using var stream = System.IO.File.OpenRead(filePath);
+        using var stream = System.IO.File.OpenRead(filePath);
         using var reader = await Parquet.ParquetReader.CreateAsync(stream, leaveStreamOpen: false, cancellationToken: cancellationToken).ConfigureAwait(false);
 
         var dataField = reader.Schema.GetDataFields()

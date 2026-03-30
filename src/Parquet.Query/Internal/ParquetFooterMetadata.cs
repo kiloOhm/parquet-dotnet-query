@@ -3,6 +3,9 @@ using System.Text;
 using System.Text.Json;
 using Parquet;
 using Parquet.Meta;
+#if NET48
+using BrotliStream = BrotliSharpLib.BrotliStream;
+#endif
 
 namespace Parquet.Query.Internal;
 
@@ -12,12 +15,21 @@ internal static class ParquetFooterMetadata
 
     public static string Serialize<TModel>(TModel model)
     {
-        ArgumentNullException.ThrowIfNull(model);
+        Guard.NotNull(model, nameof(model));
 
         var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(model, JsonOptions);
         using var output = new MemoryStream();
-        using (var compression = new BrotliStream(output, CompressionLevel.SmallestSize, leaveOpen: true))
+        using (var compression =
+#if NET48
+            new BrotliStream(output, CompressionMode.Compress, leaveOpen: true)
+#else
+            new BrotliStream(output, CompressionLevel.SmallestSize, leaveOpen: true)
+#endif
+            )
         {
+#if NET48
+            compression.SetQuality(11);
+#endif
             compression.Write(jsonBytes, 0, jsonBytes.Length);
         }
 
@@ -61,7 +73,7 @@ internal static class ParquetFooterMetadata
         IEnumerable<KeyValuePair<string, string>> metadata,
         CancellationToken cancellationToken = default)
     {
-        var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath, cancellationToken).ConfigureAwait(false);
+        var fileBytes = await AsyncCompatibility.ReadAllBytesAsync(filePath, cancellationToken).ConfigureAwait(false);
 
         using var input = new MemoryStream(fileBytes, writable: false);
         using var reader = await ParquetReader.CreateAsync(input, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -77,7 +89,7 @@ internal static class ParquetFooterMetadata
         var footerStart = fileBytes.Length - 8 - originalFooterLength;
 
         using var output = new MemoryStream();
-        await output.WriteAsync(fileBytes.AsMemory(0, footerStart), cancellationToken).ConfigureAwait(false);
+        await AsyncCompatibility.WriteAsync(output, fileBytes, 0, footerStart, cancellationToken).ConfigureAwait(false);
 
         var footerType = typeof(ParquetReader).Assembly.GetType("Parquet.File.ThriftFooter", throwOnError: true)
             ?? throw new InvalidOperationException("Parquet.File.ThriftFooter could not be loaded.");
@@ -92,8 +104,8 @@ internal static class ParquetFooterMetadata
             ?? throw new InvalidOperationException("Parquet.File.ThriftFooter.Write(Stream) could not be found.");
 
         var newFooterLength = checked(Convert.ToInt32(writeMethod.Invoke(footer, new object[] { output })));
-        await output.WriteAsync(BitConverter.GetBytes(newFooterLength), cancellationToken).ConfigureAwait(false);
-        await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PAR1"), cancellationToken).ConfigureAwait(false);
-        await System.IO.File.WriteAllBytesAsync(filePath, output.ToArray(), cancellationToken).ConfigureAwait(false);
+        await AsyncCompatibility.WriteAsync(output, BitConverter.GetBytes(newFooterLength), cancellationToken).ConfigureAwait(false);
+        await AsyncCompatibility.WriteAsync(output, System.Text.Encoding.ASCII.GetBytes("PAR1"), cancellationToken).ConfigureAwait(false);
+        await AsyncCompatibility.WriteAllBytesAsync(filePath, output.ToArray(), cancellationToken).ConfigureAwait(false);
     }
 }

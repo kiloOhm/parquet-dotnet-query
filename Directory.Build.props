@@ -1,5 +1,23 @@
 <Project>
   <PropertyGroup Condition="'$(Version)' == '' and '$(MSBuildProjectName)' != 'Parquet.Query.Tests'">
-    <Version>0.1.0-preview.2</Version>
+    <Version>0.1.0-preview.3</Version>
   </PropertyGroup>
+
+  <PropertyGroup Condition="$([System.String]::Copy('$(MSBuildProjectName)').StartsWith('Parquet.Query'))">
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'Parquet.Query' or '$(MSBuildProjectName)' == 'Parquet.Query.Extensions.Writing' or '$(MSBuildProjectName)' == 'Parquet.Query.Extensions.Pooling'">
+    <Compile Include="$(MSBuildThisFileDirectory)src\Shared\Compatibility\AsyncCompatibility.cs" Link="Compatibility\AsyncCompatibility.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)src\Shared\Compatibility\CompatibilityUsings.cs" Link="Compatibility\CompatibilityUsings.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)src\Shared\Compatibility\Guard.cs" Link="Compatibility\Guard.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)src\Shared\Compatibility\HashingCompatibility.cs" Link="Compatibility\HashingCompatibility.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)src\Shared\Compatibility\HexEncoding.cs" Link="Compatibility\HexEncoding.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)src\Shared\Compatibility\PlatformCompatibility.cs" Link="Compatibility\PlatformCompatibility.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)src\Shared\Compatibility\ValueTaskCompatibility.cs" Link="Compatibility\ValueTaskCompatibility.cs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48' and $([System.String]::Copy('$(MSBuildProjectName)').StartsWith('Parquet.Query'))">
+    <Compile Include="$(MSBuildThisFileDirectory)src\Shared\Compatibility\IsExternalInit.cs" Link="Compatibility\IsExternalInit.cs" />
+  </ItemGroup>
 </Project>

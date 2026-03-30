@@ -18,7 +18,7 @@ public static class PredicatePushdownExtractor
     /// <returns>The extracted pushdown split.</returns>
     public static PredicatePushdownSplit<T> Extract<T>(Expression<Func<T, bool>> predicate)
     {
-        ArgumentNullException.ThrowIfNull(predicate);
+        Guard.NotNull(predicate, nameof(predicate));
 
         var pushdownPredicates = new List<PushdownPredicate<T>>();
         var residualDiagnostics = new List<PredicatePushdownDiagnostic>();

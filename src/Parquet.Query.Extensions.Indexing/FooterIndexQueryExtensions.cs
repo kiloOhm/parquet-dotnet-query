@@ -18,7 +18,10 @@ public static class FooterIndexQueryExtensions
         this ParquetQuery<TSource, TResult> query)
         where TSource : class, new()
     {
-        ArgumentNullException.ThrowIfNull(query);
+        if (query is null)
+        {
+            throw new ArgumentNullException(nameof(query));
+        }
         return query.WithPredicatePlanner(FooterIndexPredicatePlanner<TSource>.Instance);
     }
 }

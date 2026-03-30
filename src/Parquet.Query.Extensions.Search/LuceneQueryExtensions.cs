@@ -23,7 +23,10 @@ public static class LuceneQueryExtensions
         string term)
         where TSource : class, new()
     {
-        ArgumentNullException.ThrowIfNull(builder);
+        if (builder is null)
+        {
+            throw new ArgumentNullException(nameof(builder));
+        }
         return builder.Add(new LuceneTermPredicate<TSource>(selector, term));
     }
 
@@ -47,7 +50,10 @@ public static class LuceneQueryExtensions
         bool transpositions = true)
         where TSource : class, new()
     {
-        ArgumentNullException.ThrowIfNull(builder);
+        if (builder is null)
+        {
+            throw new ArgumentNullException(nameof(builder));
+        }
         return builder.Add(new LuceneTermPredicate<TSource>(selector, term, maxEdits, prefixLength, transpositions));
     }
 
@@ -62,7 +68,10 @@ public static class LuceneQueryExtensions
         this ParquetQuery<TSource, TResult> query)
         where TSource : class, new()
     {
-        ArgumentNullException.ThrowIfNull(query);
+        if (query is null)
+        {
+            throw new ArgumentNullException(nameof(query));
+        }
         return query.WithPredicatePlanner(LucenePredicatePlanner<TSource>.Instance);
     }
 
@@ -81,7 +90,10 @@ public static class LuceneQueryExtensions
         string term)
         where TSource : class, new()
     {
-        ArgumentNullException.ThrowIfNull(query);
+        if (query is null)
+        {
+            throw new ArgumentNullException(nameof(query));
+        }
         return query
             .WithLuceneSearch()
             .Pushdown(filter => filter.LuceneMatch(selector, term));
@@ -108,7 +120,10 @@ public static class LuceneQueryExtensions
         bool transpositions = true)
         where TSource : class, new()
     {
-        ArgumentNullException.ThrowIfNull(query);
+        if (query is null)
+        {
+            throw new ArgumentNullException(nameof(query));
+        }
         return query
             .WithLuceneSearch()
             .Pushdown(filter => filter.LuceneFuzzy(selector, term, maxEdits, prefixLength, transpositions));

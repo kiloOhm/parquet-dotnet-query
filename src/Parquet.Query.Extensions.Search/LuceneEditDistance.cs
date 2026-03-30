@@ -34,8 +34,8 @@ internal static class LuceneEditDistance
             return string.Equals(candidate, query, StringComparison.Ordinal);
         }
 
-        var candidateSuffix = candidate[prefixLength..];
-        var querySuffix = query[prefixLength..];
+        var candidateSuffix = candidate.Substring(prefixLength);
+        var querySuffix = query.Substring(prefixLength);
 
         if (Math.Abs(candidateSuffix.Length - querySuffix.Length) > maxEdits)
         {

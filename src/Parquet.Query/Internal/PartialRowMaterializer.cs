@@ -1,8 +1,10 @@
 using Parquet;
+using Parquet.Meta;
 using Parquet.Query.Planning;
 using Parquet.Schema;
 using Parquet.Serialization;
 using System.Linq;
+using System.Reflection;
 
 namespace Parquet.Query.Internal;
 
@@ -131,16 +133,16 @@ internal static class PartialRowMaterializer<TSource>
 
         if (field.IsArray)
         {
-            var column = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
-            return CopyIndexedValues(rowIndexes, column.Data);
+            var arrayColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
+            return CopyIndexedValues(rowIndexes, arrayColumn.Data);
         }
 
         var values = new object?[rowIndexes.Count];
         var fullCoverage = rowIndexes.Count == rowGroupReader.RowCount && IsIdentityMap(rowIndexes);
         if (fullCoverage)
         {
-            var column = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
-            CopyDenseValues(values, column.Data);
+            var denseColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
+            CopyDenseValues(values, denseColumn.Data);
             return values;
         }
 
@@ -150,14 +152,14 @@ internal static class PartialRowMaterializer<TSource>
             return values;
         }
 
-        var pageReader = await rowGroupReader.OpenColumnPageReaderAsync(field, cancellationToken);
-        var pageOrdinals = PagePruner.SelectPageOrdinals(pageReader.OffsetIndex, rowIntervals, rowGroupReader.RowCount);
-        if (pageOrdinals.Count == 0)
+        var pages = await TryReadSparsePagesAsync(rowGroupReader, field, rowIntervals, cancellationToken).ConfigureAwait(false);
+        if (pages is null)
         {
+            var selectedColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
+            CopyIndexedValues(values, rowIndexes, selectedColumn.Data);
             return values;
         }
 
-        var pages = await pageReader.ReadPagesAsync(pageOrdinals, cancellationToken);
         CopySparseValues(values, rowIndexes, pages);
         return values;
     }
@@ -191,15 +193,15 @@ internal static class PartialRowMaterializer<TSource>
 
             if (field.IsArray)
             {
-                var column = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
-                AssignIndexedValues(binding, rows, rowIndexes, column.Data);
+                var arrayColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
+                AssignIndexedValues(binding, rows, rowIndexes, arrayColumn.Data);
                 continue;
             }
 
             if (fullCoverage)
             {
-                var column = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
-                AssignDenseValues(binding, rows, column.Data);
+                var denseColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
+                AssignDenseValues(binding, rows, denseColumn.Data);
                 continue;
             }
 
@@ -208,14 +210,14 @@ internal static class PartialRowMaterializer<TSource>
                 continue;
             }
 
-            var pageReader = await rowGroupReader.OpenColumnPageReaderAsync(field, cancellationToken);
-            var pageOrdinals = PagePruner.SelectPageOrdinals(pageReader.OffsetIndex, rowIntervals, rowGroupReader.RowCount);
-            if (pageOrdinals.Count == 0)
+            var pages = await TryReadSparsePagesAsync(rowGroupReader, field, rowIntervals, cancellationToken).ConfigureAwait(false);
+            if (pages is null)
             {
+                var selectedColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
+                AssignIndexedValues(binding, rows, rowIndexes, selectedColumn.Data);
                 continue;
             }
 
-            var pages = await pageReader.ReadPagesAsync(pageOrdinals, cancellationToken);
             AssignSparseValues(binding, rows, rowIndexes, pages);
         }
     }
@@ -310,6 +312,19 @@ internal static class PartialRowMaterializer<TSource>
         }
     }
 
+    private static void CopyIndexedValues(object?[] target, IReadOnlyList<int> rowIndexes, Array data)
+    {
+        var length = Math.Min(target.Length, rowIndexes.Count);
+        for (var index = 0; index < length; index++)
+        {
+            var sourceIndex = rowIndexes[index];
+            if ((uint)sourceIndex < (uint)data.Length)
+            {
+                target[index] = data.GetValue(sourceIndex);
+            }
+        }
+    }
+
     private static void CopySparseValues(
         object?[] target,
         IReadOnlyList<int> rowIndexes,
@@ -345,6 +360,110 @@ internal static class PartialRowMaterializer<TSource>
             }
         }
     }
+
+    private static async Task<IReadOnlyList<ParquetDataPage>?> TryReadSparsePagesAsync(
+        IParquetRowGroupReader rowGroupReader,
+        DataField field,
+        IReadOnlyList<RowInterval> rowIntervals,
+        CancellationToken cancellationToken)
+    {
+        object? pageReader =
+#if NET48
+            await OpenColumnPageReaderCompatAsync(rowGroupReader, field, cancellationToken).ConfigureAwait(false);
+#else
+            await rowGroupReader.OpenColumnPageReaderAsync(field, cancellationToken).ConfigureAwait(false);
+#endif
+        if (pageReader is null)
+        {
+            return null;
+        }
+
+        var offsetIndex = GetOffsetIndex(pageReader);
+        if (offsetIndex is null)
+        {
+            return null;
+        }
+
+        var pageOrdinals = PagePruner.SelectPageOrdinals(offsetIndex, rowIntervals, rowGroupReader.RowCount);
+        if (pageOrdinals.Count == 0)
+        {
+            return Array.Empty<ParquetDataPage>();
+        }
+
+#if NET48
+        return await ReadPagesCompatAsync(pageReader, pageOrdinals, cancellationToken).ConfigureAwait(false);
+#else
+        return await ((dynamic)pageReader).ReadPagesAsync(pageOrdinals, cancellationToken).ConfigureAwait(false);
+#endif
+    }
+
+#if NET48
+    private static async Task<object?> OpenColumnPageReaderCompatAsync(
+        IParquetRowGroupReader rowGroupReader,
+        DataField field,
+        CancellationToken cancellationToken)
+    {
+        var openMethod = rowGroupReader.GetType().GetMethod(
+            "OpenColumnPageReaderAsync",
+            BindingFlags.Instance | BindingFlags.Public,
+            binder: null,
+            types: new[] { typeof(DataField), typeof(CancellationToken) },
+            modifiers: null);
+        if (openMethod is null)
+        {
+            return null;
+        }
+
+        return await AwaitTaskResultAsync(openMethod.Invoke(rowGroupReader, new object?[] { field, cancellationToken })).ConfigureAwait(false);
+    }
+
+    private static async Task<IReadOnlyList<ParquetDataPage>?> ReadPagesCompatAsync(
+        object pageReader,
+        IReadOnlyList<int> pageOrdinals,
+        CancellationToken cancellationToken)
+    {
+        var readMethod = pageReader.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .FirstOrDefault(method =>
+            {
+                if (method.Name != "ReadPagesAsync")
+                {
+                    return false;
+                }
+
+                var parameters = method.GetParameters();
+                return parameters.Length == 2 &&
+                    parameters[1].ParameterType == typeof(CancellationToken);
+            });
+        if (readMethod is null)
+        {
+            return null;
+        }
+
+        var result = await AwaitTaskResultAsync(readMethod.Invoke(pageReader, new object?[] { pageOrdinals, cancellationToken })).ConfigureAwait(false);
+        if (result is IReadOnlyList<ParquetDataPage> pages)
+        {
+            return pages;
+        }
+
+        return result is IEnumerable<ParquetDataPage> enumerable
+            ? enumerable.ToArray()
+            : null;
+    }
+
+    private static async Task<object?> AwaitTaskResultAsync(object? taskLike)
+    {
+        if (taskLike is not Task task)
+        {
+            return null;
+        }
+
+        await task.ConfigureAwait(false);
+        return taskLike.GetType().GetProperty("Result", BindingFlags.Instance | BindingFlags.Public)?.GetValue(taskLike);
+    }
+#endif
+
+    private static OffsetIndex? GetOffsetIndex(object pageReader) =>
+        pageReader.GetType().GetProperty("OffsetIndex", BindingFlags.Instance | BindingFlags.Public)?.GetValue(pageReader) as OffsetIndex;
 
     private static int[] CreateRowIndexes(long rowGroupRowCount, IReadOnlyList<RowInterval>? candidateIntervals)
     {

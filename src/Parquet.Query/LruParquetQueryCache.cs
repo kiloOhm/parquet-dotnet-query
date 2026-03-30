@@ -27,26 +27,26 @@ public sealed class LruParquetQueryCache : IParquetQueryCache
     /// <inheritdoc />
     public ValueTask<object?> GetAsync(string key, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        Guard.NotNullOrWhiteSpace(key, nameof(key));
 
         lock (_gate)
         {
             if (!_entries.TryGetValue(key, out LinkedListNode<CacheEntry>? node))
             {
-                return ValueTask.FromResult<object?>(null);
+                return ValueTaskCompatibility.FromResult<object?>(null);
             }
 
             _lru.Remove(node);
             _lru.AddFirst(node);
-            return ValueTask.FromResult<object?>(node.Value.Value);
+            return ValueTaskCompatibility.FromResult<object?>(node.Value.Value);
         }
     }
 
     /// <inheritdoc />
     public ValueTask SetAsync(string key, object value, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        ArgumentNullException.ThrowIfNull(value);
+        Guard.NotNullOrWhiteSpace(key, nameof(key));
+        Guard.NotNull(value, nameof(value));
 
         lock (_gate)
         {
@@ -71,7 +71,7 @@ public sealed class LruParquetQueryCache : IParquetQueryCache
             }
         }
 
-        return ValueTask.CompletedTask;
+        return ValueTaskCompatibility.CompletedTask;
     }
 
     private sealed record CacheEntry(string Key, object Value);

@@ -64,7 +64,7 @@ public static class ParquetQuery
 public sealed class ParquetQuery<TSource, TResult>
     where TSource : class, new()
 {
-    private static readonly StringComparer FilePathComparer = OperatingSystem.IsWindows()
+    private static readonly StringComparer FilePathComparer = PlatformCompatibility.IsWindows()
         ? StringComparer.OrdinalIgnoreCase
         : StringComparer.Ordinal;
 
@@ -115,7 +115,7 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <returns>A new query rooted at the provided files.</returns>
     public static ParquetQuery<TSource, TResult> FromFiles(IEnumerable<string> filePaths, ParquetOptions? parquetOptions = null)
     {
-        ArgumentNullException.ThrowIfNull(filePaths);
+        Guard.NotNull(filePaths, nameof(filePaths));
 
         var normalizedFilePaths = filePaths
             .Where(path => !string.IsNullOrWhiteSpace(path))
@@ -149,7 +149,7 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <returns>A new query with the combined pushdown filter.</returns>
     public ParquetQuery<TSource, TResult> Pushdown(PushdownFilter<TSource> filter)
     {
-        ArgumentNullException.ThrowIfNull(filter);
+        Guard.NotNull(filter, nameof(filter));
 
         return new ParquetQuery<TSource, TResult>(
             _filePaths,
@@ -179,7 +179,7 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <returns>A new query with the predicate appended.</returns>
     public ParquetQuery<TSource, TResult> Where(Expression<Func<TSource, bool>> predicate)
     {
-        ArgumentNullException.ThrowIfNull(predicate);
+        Guard.NotNull(predicate, nameof(predicate));
 
         var split = PredicatePushdownExtractor.Extract(predicate);
 
@@ -204,7 +204,7 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <returns>A new query that yields projected values.</returns>
     public ParquetQuery<TSource, TNextResult> Select<TNextResult>(Expression<Func<TSource, TNextResult>> projection)
     {
-        ArgumentNullException.ThrowIfNull(projection);
+        Guard.NotNull(projection, nameof(projection));
 
         return new ParquetQuery<TSource, TNextResult>(
             _filePaths,
@@ -244,7 +244,7 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <returns>A new query with the planner registered.</returns>
     public ParquetQuery<TSource, TResult> WithPredicatePlanner(IParquetPredicatePlanner<TSource> predicatePlanner)
     {
-        ArgumentNullException.ThrowIfNull(predicatePlanner);
+        Guard.NotNull(predicatePlanner, nameof(predicatePlanner));
         return WithPredicatePlanners(new[] { predicatePlanner });
     }
 
@@ -255,7 +255,7 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <returns>A new query with the planners registered.</returns>
     public ParquetQuery<TSource, TResult> WithPredicatePlanners(IEnumerable<IParquetPredicatePlanner<TSource>> predicatePlanners)
     {
-        ArgumentNullException.ThrowIfNull(predicatePlanners);
+        Guard.NotNull(predicatePlanners, nameof(predicatePlanners));
 
         var combinedPlanners = _predicatePlanners
             .Concat(predicatePlanners)
@@ -282,7 +282,7 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <returns>A new query with the supplied parquet options.</returns>
     public ParquetQuery<TSource, TResult> WithParquetOptions(ParquetOptions parquetOptions)
     {
-        ArgumentNullException.ThrowIfNull(parquetOptions);
+        Guard.NotNull(parquetOptions, nameof(parquetOptions));
 
         return new ParquetQuery<TSource, TResult>(
             _filePaths,
@@ -304,7 +304,7 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <returns>A new query with the updated parquet options.</returns>
     public ParquetQuery<TSource, TResult> ConfigureParquetOptions(Action<ParquetOptions> configure)
     {
-        ArgumentNullException.ThrowIfNull(configure);
+        Guard.NotNull(configure, nameof(configure));
 
         var options = ParquetOptionsFactory.Clone(_parquetOptions);
         configure(options);
@@ -316,7 +316,7 @@ public sealed class ParquetQuery<TSource, TResult>
     /// </summary>
     public ParquetQuery<TSource, TResult> WithReaderFactory(IParquetReaderFactory readerFactory)
     {
-        ArgumentNullException.ThrowIfNull(readerFactory);
+        Guard.NotNull(readerFactory, nameof(readerFactory));
 
         return new ParquetQuery<TSource, TResult>(
             _filePaths,
@@ -336,7 +336,7 @@ public sealed class ParquetQuery<TSource, TResult>
     /// </summary>
     public ParquetQuery<TSource, TResult> WithQueryCache(IParquetQueryCache queryCache)
     {
-        ArgumentNullException.ThrowIfNull(queryCache);
+        Guard.NotNull(queryCache, nameof(queryCache));
 
         return new ParquetQuery<TSource, TResult>(
             _filePaths,

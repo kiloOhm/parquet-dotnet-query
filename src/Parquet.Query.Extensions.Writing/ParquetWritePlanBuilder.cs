@@ -30,7 +30,7 @@ public static class ParquetWritePlanBuilder
     /// <returns>The generated parquet schema.</returns>
     public static ParquetSchema BuildSchema(Type rowType)
     {
-        ArgumentNullException.ThrowIfNull(rowType);
+        Guard.NotNull(rowType, nameof(rowType));
         return GetOrCreateCachedPlan(rowType).Schema;
     }
 
@@ -50,7 +50,7 @@ public static class ParquetWritePlanBuilder
     /// <returns>The generated write plan.</returns>
     public static ParquetWritePlan Build(Type rowType, ParquetSerializerOptions? serializerOptions = null)
     {
-        ArgumentNullException.ThrowIfNull(rowType);
+        Guard.NotNull(rowType, nameof(rowType));
 
         var cachedPlan = GetOrCreateCachedPlan(rowType);
         if (serializerOptions is null)

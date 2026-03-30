@@ -66,7 +66,7 @@ public sealed class LucenePredicatePlanner<T> : IParquetPredicatePlanner<T>
         ParquetPagePruningContext context,
         PushdownPredicate<T> predicate,
         CancellationToken cancellationToken = default)
-        => ValueTask.FromResult<PagePruningResult?>(null);
+        => new ValueTask<PagePruningResult?>((PagePruningResult?)null);
 
     private static LuceneFooterIndexModel? GetIndex(
         string filePath,

@@ -30,7 +30,10 @@ public sealed class LuceneTermPredicate<T> : PushdownPredicate<T>
             Describe(selector, term, maxEdits, prefixLength, transpositions),
             CreateRowPredicate(selector, term, maxEdits, prefixLength, transpositions))
     {
-        ArgumentNullException.ThrowIfNull(selector);
+        if (selector is null)
+        {
+            throw new ArgumentNullException(nameof(selector));
+        }
 
         Term = LuceneTextAnalyzer.AnalyzeSingleTerm(term);
         MaxEdits = maxEdits;

@@ -6,7 +6,7 @@ internal static class SourceAccessAnalyzer
 {
     public static SourceAccessAnalysis Analyze(LambdaExpression expression)
     {
-        ArgumentNullException.ThrowIfNull(expression);
+        Guard.NotNull(expression, nameof(expression));
 
         var visitor = new Visitor(expression.Parameters[0]);
         visitor.Visit(expression.Body);

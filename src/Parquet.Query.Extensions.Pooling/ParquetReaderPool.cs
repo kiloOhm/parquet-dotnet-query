@@ -11,7 +11,7 @@ namespace Parquet.Query.Extensions.Pooling;
 /// </summary>
 public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
 {
-    private static readonly StringComparer FilePathComparer = OperatingSystem.IsWindows()
+    private static readonly StringComparer FilePathComparer = PlatformCompatibility.IsWindows()
         ? StringComparer.OrdinalIgnoreCase
         : StringComparer.Ordinal;
 
@@ -53,7 +53,7 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
             var unblockedTask = GetUnblockedTask(state);
             if (unblockedTask is not null)
             {
-                await unblockedTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+                await AsyncCompatibility.WaitAsync(unblockedTask, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
@@ -110,7 +110,7 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
                         RemoveEmptyBucket(state, optionsKey, bucket);
                         if (state.ActiveCount == 0)
                         {
-                            state.DrainCompletion.TrySetResult();
+                            state.DrainCompletion.TrySetResult(null);
                         }
                     }
 
@@ -132,7 +132,7 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
         ParquetOptions? parquetOptions = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(filePath);
+        Guard.NotNull(filePath, nameof(filePath));
         if (readerCount < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(readerCount));
@@ -170,7 +170,7 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
         ParquetOptions? parquetOptions = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(filePaths);
+        Guard.NotNull(filePaths, nameof(filePaths));
 
         var tasks = filePaths
             .Where(path => !string.IsNullOrWhiteSpace(path))
@@ -216,7 +216,7 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
             }
 
             await DisposeReadersAsync(idleReaders).ConfigureAwait(false);
-            await drainTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await AsyncCompatibility.WaitAsync(drainTask, cancellationToken).ConfigureAwait(false);
             return new ParquetReaderPoolFileBlockLease(this, normalizedFilePath, state);
         }
         catch
@@ -224,8 +224,8 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
             lock (state.Gate)
             {
                 state.IsBlocked = false;
-                state.DrainCompletion.TrySetResult();
-                state.UnblockedCompletion.TrySetResult();
+                state.DrainCompletion.TrySetResult(null);
+                state.UnblockedCompletion.TrySetResult(null);
             }
 
             if (blockSemaphoreHeld)
@@ -256,11 +256,11 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
             Task drainTask;
             lock (state.Gate)
             {
-                state.UnblockedCompletion.TrySetResult();
+                state.UnblockedCompletion.TrySetResult(null);
                 idleReaders = DrainIdleReaders(state);
                 if (state.ActiveCount == 0)
                 {
-                    state.DrainCompletion.TrySetResult();
+                    state.DrainCompletion.TrySetResult(null);
                 }
                 else if (state.DrainCompletion.Task.IsCompleted)
                 {
@@ -300,7 +300,7 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
 
             if (state.ActiveCount == 0)
             {
-                state.DrainCompletion.TrySetResult();
+                state.DrainCompletion.TrySetResult(null);
             }
         }
 
@@ -318,13 +318,13 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
         lock (state.Gate)
         {
             state.IsBlocked = false;
-            state.DrainCompletion.TrySetResult();
-            state.UnblockedCompletion.TrySetResult();
+            state.DrainCompletion.TrySetResult(null);
+            state.UnblockedCompletion.TrySetResult(null);
         }
 
         state.BlockSemaphore.Release();
         TryRemoveState(state);
-        return ValueTask.CompletedTask;
+        return ValueTaskCompatibility.CompletedTask;
     }
 
     internal sealed class FilePoolState
@@ -345,9 +345,9 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
 
         public Dictionary<ParquetOptionsKey, ReaderBucket> Buckets { get; } = new();
 
-        public TaskCompletionSource DrainCompletion { get; set; } = CreateCompletedCompletion();
+        public TaskCompletionSource<object?> DrainCompletion { get; set; } = CreateCompletedCompletion();
 
-        public TaskCompletionSource UnblockedCompletion { get; set; } = CreateCompletedCompletion();
+        public TaskCompletionSource<object?> UnblockedCompletion { get; set; } = CreateCompletedCompletion();
 
         public int ActiveCount { get; set; }
 
@@ -386,7 +386,7 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
 
             _disposed = true;
             Reader.Dispose();
-            await _stream.DisposeAsync().ConfigureAwait(false);
+            await AsyncCompatibility.DisposeAsync(_stream).ConfigureAwait(false);
         }
     }
 
@@ -409,7 +409,7 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
         public ValueTask DisposeAsync() =>
             Interlocked.Exchange(ref _disposed, 1) == 0
                 ? _pool.ReturnAsync(_state, _reader)
-                : ValueTask.CompletedTask;
+                : ValueTaskCompatibility.CompletedTask;
     }
 
     private FilePoolState GetOrCreateState(string filePath) =>
@@ -417,7 +417,7 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
 
     private static string NormalizeFilePath(string filePath)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        Guard.NotNullOrWhiteSpace(filePath, nameof(filePath));
         return Path.GetFullPath(filePath);
     }
 
@@ -484,7 +484,7 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
         }
         catch
         {
-            await stream.DisposeAsync().ConfigureAwait(false);
+            await AsyncCompatibility.DisposeAsync(stream).ConfigureAwait(false);
             throw;
         }
     }
@@ -535,14 +535,14 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
 
     private void ThrowDisposed() => throw new ObjectDisposedException(nameof(ParquetReaderPool));
 
-    private static TaskCompletionSource CreateCompletedCompletion()
+    private static TaskCompletionSource<object?> CreateCompletedCompletion()
     {
         var completion = CreatePendingCompletion();
-        completion.TrySetResult();
+        completion.TrySetResult(null);
         return completion;
     }
 
-    private static TaskCompletionSource CreatePendingCompletion() =>
+    private static TaskCompletionSource<object?> CreatePendingCompletion() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal sealed class ParquetOptionsKey : IEquatable<ParquetOptionsKey>
@@ -575,9 +575,9 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
             Append(builder, nameof(options.UseBigDecimal), options.UseBigDecimal);
             Append(builder, nameof(options.UsePlaintextFooter), options.UsePlaintextFooter);
             Append(builder, nameof(options.FooterEncryptionKey), options.FooterEncryptionKey);
-            Append(builder, nameof(options.FooterEncryptionKeyMetadata), Convert.ToHexString(options.FooterEncryptionKeyMetadata ?? Array.Empty<byte>()));
+            Append(builder, nameof(options.FooterEncryptionKeyMetadata), HexEncoding.ToHexString(options.FooterEncryptionKeyMetadata ?? Array.Empty<byte>()));
             Append(builder, nameof(options.FooterSigningKey), options.FooterSigningKey);
-            Append(builder, nameof(options.FooterSigningKeyMetadata), Convert.ToHexString(options.FooterSigningKeyMetadata ?? Array.Empty<byte>()));
+            Append(builder, nameof(options.FooterSigningKeyMetadata), HexEncoding.ToHexString(options.FooterSigningKeyMetadata ?? Array.Empty<byte>()));
             Append(builder, nameof(options.AADPrefix), options.AADPrefix);
             Append(builder, nameof(options.SupplyAadPrefix), options.SupplyAadPrefix);
             Append(builder, nameof(options.UseCtrVariant), options.UseCtrVariant);
@@ -589,7 +589,7 @@ public sealed class ParquetReaderPool : IParquetReaderFactory, IAsyncDisposable
 
             foreach (var entry in options.ColumnKeys.OrderBy(entry => entry.Key, StringComparer.Ordinal))
             {
-                Append(builder, $"column:{entry.Key}", $"{entry.Value.Key}|{Convert.ToHexString(entry.Value.KeyMetadata ?? Array.Empty<byte>())}");
+                Append(builder, $"column:{entry.Key}", $"{entry.Value.Key}|{HexEncoding.ToHexString(entry.Value.KeyMetadata ?? Array.Empty<byte>())}");
             }
 
             if (options.ColumnKeyResolver is not null)

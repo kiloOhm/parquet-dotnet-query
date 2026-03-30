@@ -34,7 +34,7 @@ internal sealed class SerializerOptionsSnapshot
 
     public static SerializerOptionsSnapshot From(ParquetSerializerOptions options)
     {
-        ArgumentNullException.ThrowIfNull(options);
+        Guard.NotNull(options, nameof(options));
         return new SerializerOptionsSnapshot(
             options.Append,
             options.CompressionMethod,
@@ -46,7 +46,7 @@ internal sealed class SerializerOptionsSnapshot
 
     public SerializerOptionsSnapshot WithOverrides(ParquetSerializerOptions options)
     {
-        ArgumentNullException.ThrowIfNull(options);
+        Guard.NotNull(options, nameof(options));
         return new SerializerOptionsSnapshot(
             options.Append,
             options.CompressionMethod,

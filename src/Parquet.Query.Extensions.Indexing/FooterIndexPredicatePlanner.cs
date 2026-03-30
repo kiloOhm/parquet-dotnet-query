@@ -48,7 +48,7 @@ public sealed class FooterIndexPredicatePlanner<T> : IParquetPredicatePlanner<T>
         ParquetPagePruningContext context,
         PushdownPredicate<T> predicate,
         CancellationToken cancellationToken = default)
-        => ValueTask.FromResult<PagePruningResult?>(null);
+        => new ValueTask<PagePruningResult?>((PagePruningResult?)null);
 
     private static RowGroupPredicateDecision? TryEvaluateBitmap(
         ParquetRowGroupPlannerContext context,

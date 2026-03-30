@@ -17,7 +17,7 @@ public sealed class PushdownFilterBuilder<T>
     /// <returns>The current builder.</returns>
     public PushdownFilterBuilder<T> Add(PushdownPredicate<T> predicate)
     {
-        ArgumentNullException.ThrowIfNull(predicate);
+        Guard.NotNull(predicate, nameof(predicate));
         _predicates.Add(predicate);
         return this;
     }

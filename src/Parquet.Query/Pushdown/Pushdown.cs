@@ -13,7 +13,7 @@ public static class Pushdown
     /// <returns>The built pushdown filter.</returns>
     public static PushdownFilter<T> For<T>(Func<PushdownFilterBuilder<T>, PushdownFilterBuilder<T>> configure)
     {
-        ArgumentNullException.ThrowIfNull(configure);
+        Guard.NotNull(configure, nameof(configure));
         return configure(new PushdownFilterBuilder<T>()).Build();
     }
 }

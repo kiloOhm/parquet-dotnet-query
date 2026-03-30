@@ -94,7 +94,11 @@ internal static class PartitionPruner
             return result;
         }
 
-        var segments = filePath.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var segments = filePath
+            .Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(segment => segment.Trim())
+            .Where(segment => segment.Length > 0)
+            .ToArray();
         if (segments.Length <= 1)
         {
             return result;
@@ -110,8 +114,8 @@ internal static class PartitionPruner
                 continue;
             }
 
-            var key = segment[..separatorIndex];
-            var value = segment[(separatorIndex + 1)..];
+            var key = segment.Substring(0, separatorIndex);
+            var value = segment.Substring(separatorIndex + 1);
             result[key] = value;
         }
 
@@ -131,7 +135,7 @@ internal static class PartitionPruner
         var separatorIndex = memberPath.LastIndexOf('.');
         if (separatorIndex >= 0)
         {
-            return partitionValues.TryGetValue(memberPath[(separatorIndex + 1)..], out value!);
+            return partitionValues.TryGetValue(memberPath.Substring(separatorIndex + 1), out value!);
         }
 
         return false;

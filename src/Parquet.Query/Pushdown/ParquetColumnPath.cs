@@ -44,7 +44,7 @@ public static class PushdownColumnPath
     /// <returns>The resolved path mapping.</returns>
     public static ParquetColumnPath Resolve<TSource, TValue>(Expression<Func<TSource, TValue>> selector)
     {
-        ArgumentNullException.ThrowIfNull(selector);
+        Guard.NotNull(selector, nameof(selector));
 
         var path = ColumnPathResolver.FromLambda(selector);
         return new ParquetColumnPath(path.MemberPath, path.PhysicalPath);

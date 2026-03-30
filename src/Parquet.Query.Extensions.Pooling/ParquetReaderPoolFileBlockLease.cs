@@ -31,5 +31,5 @@ public sealed class ParquetReaderPoolFileBlockLease : IAsyncDisposable
     public ValueTask DisposeAsync() =>
         Interlocked.Exchange(ref _disposed, 1) == 0
             ? _pool.ReleaseFileBlockAsync(_state)
-            : ValueTask.CompletedTask;
+            : ValueTaskCompatibility.CompletedTask;
 }

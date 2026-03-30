@@ -15,8 +15,8 @@ public static class ParquetReaderPoolQueryExtensions
         ParquetReaderPool pool)
         where TSource : class, new()
     {
-        ArgumentNullException.ThrowIfNull(query);
-        ArgumentNullException.ThrowIfNull(pool);
+        Guard.NotNull(query, nameof(query));
+        Guard.NotNull(pool, nameof(pool));
         return query.WithReaderFactory(pool);
     }
 }

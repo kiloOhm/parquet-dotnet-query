@@ -11,10 +11,11 @@ internal static class LuceneTextAnalyzer
             return Array.Empty<string>();
         }
 
+        var normalizedValue = value!;
         var tokens = new List<string>();
-        var buffer = new StringBuilder(value.Length);
+        var buffer = new StringBuilder(normalizedValue.Length);
 
-        foreach (var character in value)
+        foreach (var character in normalizedValue)
         {
             if (char.IsLetterOrDigit(character))
             {
@@ -31,7 +32,10 @@ internal static class LuceneTextAnalyzer
 
     public static string AnalyzeSingleTerm(string term)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(term);
+        if (string.IsNullOrWhiteSpace(term))
+        {
+            throw new ArgumentException("Value cannot be null, empty, or whitespace.", nameof(term));
+        }
 
         var tokens = Analyze(term);
         if (tokens.Count != 1)
