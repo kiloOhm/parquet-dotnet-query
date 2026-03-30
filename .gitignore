@@ -7,3 +7,7 @@ BenchmarkDotNet.Artifacts/
 
 *.user
 *.suo
+
+# React viewer app
+tools/Parquet.Query.Viewer/src/viewer-app/node_modules/
+tools/Parquet.Query.Viewer/src/Parquet.Query.Viewer/wwwroot/
