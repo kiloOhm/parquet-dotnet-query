@@ -1,3 +1,8 @@
+# 0.1.0-preview.5
+
+- Fix footer-backed hash, bitmap, and Lucene index builders to reopen parquet files with the original parquet encryption options, so footer-encrypted files can build and query footer metadata indexes again.
+- Preserve encrypted and signed footer formats when query-extension metadata rewrites update parquet footer metadata, instead of downgrading encrypted footer files during index persistence.
+
 # 0.1.0-preview.4
 
 - Switch release and package-fallback builds to `kiloOhm.Parquet.Net 5.6.0-pre.3--kiloOhm.5` for both `net8.0` and `net48`, so CI and published packages use the fork that now ships the required page index, encryption, and footer APIs.

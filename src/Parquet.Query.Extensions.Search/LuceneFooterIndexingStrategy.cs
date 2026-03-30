@@ -1,5 +1,6 @@
 using Parquet.Query.Extensions.Writing;
 using Parquet.Query.Extensions.Writing.Indexing;
+using Parquet.Query.Internal;
 using Parquet.Schema;
 
 namespace Parquet.Query.Extensions.Search;
@@ -33,19 +34,25 @@ public sealed class LuceneFooterIndexingStrategy : IParquetIndexingStrategy
             throw new ArgumentNullException(nameof(descriptor));
         }
 
-        var index = await BuildIndexAsync(context.FilePath, descriptor.ColumnPath, cancellationToken).ConfigureAwait(false);
+        var parquetOptions = ParquetOptionsFactory.Clone(context.WritePlan.SerializerOptions.ParquetOptions);
+        var index = await BuildIndexAsync(context.FilePath, descriptor.ColumnPath, parquetOptions, cancellationToken).ConfigureAwait(false);
         var metadataKey = LuceneFooterIndexStorage.GetMetadataKey(descriptor.ColumnPath);
         var metadataValue = LuceneFooterIndexStorage.Serialize(index);
-        await LuceneFooterIndexStorage.WriteToFooterAsync(context.FilePath, metadataKey, metadataValue, cancellationToken).ConfigureAwait(false);
+        await LuceneFooterIndexStorage.WriteToFooterAsync(context.FilePath, metadataKey, metadataValue, parquetOptions, cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<LuceneFooterIndexModel> BuildIndexAsync(
         string filePath,
         string columnPath,
+        Parquet.ParquetOptions? parquetOptions,
         CancellationToken cancellationToken)
     {
         using var stream = System.IO.File.OpenRead(filePath);
-        using var reader = await Parquet.ParquetReader.CreateAsync(stream, leaveStreamOpen: false, cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var reader = await Parquet.ParquetReader.CreateAsync(
+            stream,
+            parquetOptions,
+            leaveStreamOpen: false,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
 
         var dataField = reader.Schema.GetDataFields()
             .FirstOrDefault(field => string.Equals(field.Path.ToString(), columnPath, StringComparison.Ordinal));

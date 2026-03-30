@@ -1,4 +1,5 @@
 using Parquet.Query.Internal;
+using Parquet;
 
 namespace Parquet.Query.Extensions.Indexing;
 
@@ -20,6 +21,7 @@ internal static class FooterIndexStorage
         string filePath,
         string metadataKey,
         string metadataValue,
+        ParquetOptions? parquetOptions = null,
         CancellationToken cancellationToken = default)
-        => await ParquetFooterMetadata.WriteAsync(filePath, metadataKey, metadataValue, cancellationToken).ConfigureAwait(false);
+        => await ParquetFooterMetadata.WriteAsync(filePath, metadataKey, metadataValue, parquetOptions, cancellationToken).ConfigureAwait(false);
 }

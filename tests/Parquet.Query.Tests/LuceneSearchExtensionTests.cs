@@ -1,3 +1,4 @@
+using Parquet;
 using Parquet.Query.Extensions.Search;
 using Parquet.Query.Extensions.Writing;
 using Parquet.Query.Extensions.Writing.Attributes;
@@ -101,6 +102,46 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
 
         Assert.Equal(new[] { 1 }, withTranspositions.Select(row => row.Id).ToArray());
         Assert.Empty(withoutTranspositions);
+    }
+
+    [Fact]
+    public async Task WriteAsync_builds_lucene_footer_index_for_footer_encrypted_files()
+    {
+        var filePath = Path.Combine(_tempDirectory, "lucene-encrypted.parquet");
+        const string footerKey = "0123456789ABCDEF";
+
+        await ParquetFileWriter.WriteAsync(
+            new[]
+            {
+                new SearchRow { Id = 1, Name = "Berlin Travel" },
+                new SearchRow { Id = 2, Name = "Hamburg Harbor" },
+                new SearchRow { Id = 3, Name = "Tokyo Lights" },
+                new SearchRow { Id = 4, Name = "Osaka Castle" }
+            },
+            filePath,
+            indexingStrategies: new[] { new LuceneFooterIndexingStrategy() },
+            serializerOptions: new ParquetSerializerOptions
+            {
+                RowGroupSize = 2,
+                ParquetOptions = new ParquetOptions
+                {
+                    FooterEncryptionKey = footerKey
+                }
+            });
+
+        var query = ParquetQuery
+            .FromFile<SearchRow>(filePath)
+            .WithFooterKey(footerKey)
+            .LuceneFuzzy(row => row.Name, "berln", maxEdits: 1, prefixLength: 1);
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.Equal(new[] { 1 }, rows.Select(row => row.Id).ToArray());
+        Assert.Equal(2, plan.RowGroups.Count);
+        Assert.True(plan.RowGroups[0].ShouldRead);
+        Assert.False(plan.RowGroups[1].ShouldRead);
+        Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source == "lucene");
     }
 
     [Fact]

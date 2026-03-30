@@ -1,4 +1,5 @@
 using Parquet.Query.Internal;
+using Parquet;
 
 namespace Parquet.Query.Extensions.Search;
 
@@ -13,6 +14,11 @@ internal static class LuceneFooterIndexStorage
     public static LuceneFooterIndexModel? TryDeserialize(string? payload)
         => ParquetFooterMetadata.TryDeserialize<LuceneFooterIndexModel>(payload);
 
-    public static async Task WriteToFooterAsync(string filePath, string metadataKey, string metadataValue, CancellationToken cancellationToken = default)
-        => await ParquetFooterMetadata.WriteAsync(filePath, metadataKey, metadataValue, cancellationToken).ConfigureAwait(false);
+    public static async Task WriteToFooterAsync(
+        string filePath,
+        string metadataKey,
+        string metadataValue,
+        ParquetOptions? parquetOptions = null,
+        CancellationToken cancellationToken = default)
+        => await ParquetFooterMetadata.WriteAsync(filePath, metadataKey, metadataValue, parquetOptions, cancellationToken).ConfigureAwait(false);
 }

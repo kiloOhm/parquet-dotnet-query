@@ -1,3 +1,4 @@
+using Parquet;
 using Parquet.Query.Extensions.Indexing;
 using Parquet.Query.Internal;
 using Parquet.Query.Extensions.Writing;
@@ -67,6 +68,88 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
 
         var query = ParquetQuery
             .FromFile<FooterBitmapRow>(filePath)
+            .WithFooterIndexes()
+            .Pushdown(filter => filter.Eq(row => row.Group, "bravo"));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.Equal(new[] { "3" }, rows.Select(row => row.Id).ToArray());
+        Assert.Equal(2, plan.RowGroups.Count);
+        Assert.False(plan.RowGroups[0].ShouldRead);
+        Assert.True(plan.RowGroups[1].ShouldRead);
+        Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source.Contains("footer-bitmap", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WriteAsync_builds_footer_hash_index_for_footer_encrypted_files()
+    {
+        var filePath = Path.Combine(_tempDirectory, "footer-hash-encrypted.parquet");
+        const string footerKey = "0123456789ABCDEF";
+
+        await ParquetFileWriter.WriteAsync(
+            new[]
+            {
+                new FooterHashRow { Id = "key-100", Group = "north" },
+                new FooterHashRow { Id = "key-300", Group = "west" },
+                new FooterHashRow { Id = "key-200", Group = "south" },
+                new FooterHashRow { Id = "key-400", Group = "east" }
+            },
+            filePath,
+            indexingStrategies: new[] { new FooterHashIndexingStrategy(bucketCount: 65536) },
+            serializerOptions: new ParquetSerializerOptions
+            {
+                RowGroupSize = 2,
+                ParquetOptions = new ParquetOptions
+                {
+                    FooterEncryptionKey = footerKey
+                }
+            });
+
+        var query = ParquetQuery
+            .FromFile<FooterHashRow>(filePath)
+            .WithFooterKey(footerKey)
+            .WithFooterIndexes()
+            .Pushdown(filter => filter.Eq(row => row.Id, "key-200"));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.Equal(new[] { "key-200" }, rows.Select(row => row.Id).ToArray());
+        Assert.Equal(2, plan.RowGroups.Count);
+        Assert.False(plan.RowGroups[0].ShouldRead);
+        Assert.True(plan.RowGroups[1].ShouldRead);
+        Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source.Contains("footer-hash", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WriteAsync_builds_footer_bitmap_index_for_footer_encrypted_files()
+    {
+        var filePath = Path.Combine(_tempDirectory, "footer-bitmap-encrypted.parquet");
+        const string footerKey = "0123456789ABCDEF";
+
+        await ParquetFileWriter.WriteAsync(
+            new[]
+            {
+                new FooterBitmapRow { Id = "1", Group = "alpha" },
+                new FooterBitmapRow { Id = "2", Group = "charlie" },
+                new FooterBitmapRow { Id = "3", Group = "bravo" },
+                new FooterBitmapRow { Id = "4", Group = "delta" }
+            },
+            filePath,
+            indexingStrategies: new[] { new FooterBitmapIndexingStrategy() },
+            serializerOptions: new ParquetSerializerOptions
+            {
+                RowGroupSize = 2,
+                ParquetOptions = new ParquetOptions
+                {
+                    FooterEncryptionKey = footerKey
+                }
+            });
+
+        var query = ParquetQuery
+            .FromFile<FooterBitmapRow>(filePath)
+            .WithFooterKey(footerKey)
             .WithFooterIndexes()
             .Pushdown(filter => filter.Eq(row => row.Group, "bravo"));
 
