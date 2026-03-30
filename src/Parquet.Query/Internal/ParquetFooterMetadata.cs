@@ -93,7 +93,7 @@ internal static class ParquetFooterMetadata
 
         var newFooterLength = checked(Convert.ToInt32(writeMethod.Invoke(footer, new object[] { output })));
         await output.WriteAsync(BitConverter.GetBytes(newFooterLength), cancellationToken).ConfigureAwait(false);
-        await output.WriteAsync(Encoding.ASCII.GetBytes("PAR1"), cancellationToken).ConfigureAwait(false);
+        await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PAR1"), cancellationToken).ConfigureAwait(false);
         await System.IO.File.WriteAllBytesAsync(filePath, output.ToArray(), cancellationToken).ConfigureAwait(false);
     }
 }

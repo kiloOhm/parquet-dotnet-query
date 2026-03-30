@@ -153,8 +153,8 @@ public sealed class InternalCoverageTests
             await using var stream = System.IO.File.OpenRead(filePath);
             using var reader = await Parquet.ParquetReader.CreateAsync(stream);
 
-            var deferredRows = await InvokeReadRowGroupAsync<CollectionRow>(filePath, reader, deferredPlan);
-            var fullRows = await InvokeReadRowGroupAsync<CollectionRow>(filePath, reader, fullPlan);
+            var deferredRows = await InvokeReadRowGroupAsync<CollectionRow>(reader, deferredPlan);
+            var fullRows = await InvokeReadRowGroupAsync<CollectionRow>(reader, fullPlan);
 
             Assert.Equal(new[] { "a", "b" }, deferredRows[0].Tags);
             Assert.Equal(new[] { "c" }, deferredRows[1].Tags);
@@ -222,7 +222,7 @@ public sealed class InternalCoverageTests
         (bool)(plan.GetType().GetProperty("RequiresFullMaterialization", BindingFlags.Public | BindingFlags.Instance)?.GetValue(plan)
             ?? throw new InvalidOperationException("RequiresFullMaterialization not found."));
 
-    private static async Task<IReadOnlyList<TSource>> InvokeReadRowGroupAsync<TSource>(string filePath, Parquet.ParquetReader reader, object plan)
+    private static async Task<IReadOnlyList<TSource>> InvokeReadRowGroupAsync<TSource>(Parquet.ParquetReader reader, object plan)
         where TSource : class, new()
     {
         var assembly = typeof(ParquetQuery).Assembly;
@@ -231,7 +231,7 @@ public sealed class InternalCoverageTests
         var closedMaterializerType = materializerType.MakeGenericType(typeof(TSource));
         var readMethod = closedMaterializerType.GetMethod("ReadRowGroupAsync", BindingFlags.Public | BindingFlags.Static)
             ?? throw new InvalidOperationException("ReadRowGroupAsync not found.");
-        var task = (Task)readMethod.Invoke(null, new object?[] { filePath, reader, 0, plan, null, null, CancellationToken.None })!;
+        var task = (Task)readMethod.Invoke(null, new object?[] { reader, 0, plan, null, null, CancellationToken.None })!;
         await task.ConfigureAwait(false);
         var resultProperty = task.GetType().GetProperty("Result", BindingFlags.Public | BindingFlags.Instance)
             ?? throw new InvalidOperationException("Task result not found.");

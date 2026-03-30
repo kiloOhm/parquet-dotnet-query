@@ -1,3 +1,5 @@
+using Parquet.Query.Pushdown;
+
 namespace Parquet.Query.Planning;
 
 internal static class PruningHelpers
