@@ -139,7 +139,7 @@ The repository now includes a search-focused extension project at `src/Parquet.Q
 
 It also now includes an indexing-focused extension project at `src/Parquet.Query.Extensions.Indexing` with:
 
-- a `FooterHashIndexingStrategy` for `[ParquetFooterHashIndex]` string lookup columns
+- a `FooterHashIndexingStrategy` for `[ParquetFooterHashIndex]` supported scalar equality columns
 - a `FooterBitmapIndexingStrategy` for `[ParquetFooterBitmapIndex]` low-cardinality equality columns
 - `WithFooterIndexes()` query extensions backed by footer-aware equality pruning
 

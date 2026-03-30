@@ -83,6 +83,7 @@ public sealed class FooterBitmapIndexingStrategy : IParquetIndexingStrategy
         var fieldType = Nullable.GetUnderlyingType(dataField.ClrType) ?? dataField.ClrType;
         if (!FooterIndexValueFormatter.IsSupportedType(fieldType))
         {
+            FooterIndexDiagnostics.WarnBitmapUnsupportedType(columnPath, fieldType);
             throw new InvalidOperationException($"Footer bitmap indexes do not support '{fieldType.Name}' columns.");
         }
 
@@ -109,6 +110,7 @@ public sealed class FooterBitmapIndexingStrategy : IParquetIndexingStrategy
                 {
                     if (values.Count >= maxDistinctValues)
                     {
+                        FooterIndexDiagnostics.WarnBitmapHighCardinality(columnPath, fieldType, values.Count + 1, maxDistinctValues);
                         throw new InvalidOperationException(
                             $"Footer bitmap indexes are intended for low-cardinality columns. Column '{columnPath}' exceeded the configured distinct value limit of {maxDistinctValues}.");
                     }

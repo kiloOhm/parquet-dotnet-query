@@ -5,7 +5,7 @@ using Parquet.Query.Internal;
 namespace Parquet.Query.Extensions.Indexing;
 
 /// <summary>
-/// Builds a string hash-bucket index and stores it in parquet footer metadata.
+/// Builds a hash-bucket index and stores it in parquet footer metadata.
 /// </summary>
 public sealed class FooterHashIndexingStrategy : IParquetIndexingStrategy
 {
@@ -81,12 +81,14 @@ public sealed class FooterHashIndexingStrategy : IParquetIndexingStrategy
         }
 
         var fieldType = Nullable.GetUnderlyingType(dataField.ClrType) ?? dataField.ClrType;
-        if (fieldType != typeof(string))
+        if (!FooterIndexValueFormatter.IsSupportedType(fieldType))
         {
-            throw new InvalidOperationException($"Footer hash indexes currently support string columns only. Column '{columnPath}' is '{fieldType.Name}'.");
+            FooterIndexDiagnostics.WarnHashUnsupportedType(columnPath, fieldType);
+            throw new InvalidOperationException($"Footer hash indexes do not support '{fieldType.Name}' columns.");
         }
 
         var buckets = new Dictionary<int, HashSet<int>>();
+        HashSet<string>? distinctValues = new(StringComparer.Ordinal);
         for (var rowGroupIndex = 0; rowGroupIndex < reader.RowGroupCount; rowGroupIndex++)
         {
             using var rowGroupReader = reader.OpenRowGroupReader(rowGroupIndex);
@@ -95,12 +97,20 @@ public sealed class FooterHashIndexingStrategy : IParquetIndexingStrategy
 
             for (var index = 0; index < column.Data.Length; index++)
             {
-                if (column.Data.GetValue(index) is not string value)
+                if (!FooterIndexValueFormatter.TryFormat(column.Data.GetValue(index), out var value))
                 {
                     continue;
                 }
 
                 rowGroupBuckets.Add(FooterIndexValueFormatter.GetBucket(value, bucketCount));
+                if (distinctValues is not null)
+                {
+                    distinctValues.Add(value);
+                    if (distinctValues.Count > FooterIndexDiagnostics.RecommendedBitmapDistinctValueThreshold)
+                    {
+                        distinctValues = null;
+                    }
+                }
             }
 
             foreach (var bucket in rowGroupBuckets)
@@ -113,6 +123,11 @@ public sealed class FooterHashIndexingStrategy : IParquetIndexingStrategy
 
                 rowGroups.Add(rowGroupIndex);
             }
+        }
+
+        if (distinctValues is not null)
+        {
+            FooterIndexDiagnostics.WarnHashLowCardinality(columnPath, fieldType, distinctValues.Count);
         }
 
         return new FooterHashIndexModel

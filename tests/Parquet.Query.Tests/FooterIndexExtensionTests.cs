@@ -366,20 +366,38 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task FooterHashIndexingStrategy_rejects_non_string_columns()
+    public async Task FooterHashIndexingStrategy_supports_numeric_columns()
     {
-        var filePath = Path.Combine(_tempDirectory, "footer-hash-invalid.parquet");
+        var filePath = Path.Combine(_tempDirectory, "footer-hash-numeric.parquet");
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            ParquetFileWriter.WriteAsync(
-                new[]
-                {
-                    new NumericHashRow { Id = 42 }
-                },
-                filePath,
-                indexingStrategies: new[] { new FooterHashIndexingStrategy() }));
+        await ParquetFileWriter.WriteAsync(
+            new[]
+            {
+                new NumericHashRow { Id = 100, Group = "north" },
+                new NumericHashRow { Id = 300, Group = "west" },
+                new NumericHashRow { Id = 200, Group = "south" },
+                new NumericHashRow { Id = 400, Group = "east" }
+            },
+            filePath,
+            indexingStrategies: new[] { new FooterHashIndexingStrategy(bucketCount: 65536) },
+            serializerOptions: new ParquetSerializerOptions
+            {
+                RowGroupSize = 2
+            });
 
-        Assert.Contains("string columns only", exception.Message, StringComparison.Ordinal);
+        var query = ParquetQuery
+            .FromFile<NumericHashRow>(filePath)
+            .WithFooterIndexes()
+            .Pushdown(filter => filter.Eq(row => row.Id, 200));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.Equal(new[] { 200 }, rows.Select(row => row.Id).ToArray());
+        Assert.Equal(2, plan.RowGroups.Count);
+        Assert.False(plan.RowGroups[0].ShouldRead);
+        Assert.True(plan.RowGroups[1].ShouldRead);
+        Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source.Contains("footer-hash", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -399,6 +417,55 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
                 indexingStrategies: new[] { new FooterBitmapIndexingStrategy(maxDistinctValues: 2) }));
 
         Assert.Contains("low-cardinality columns", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FooterHashIndexingStrategy_warns_when_bitmap_would_be_more_precise()
+    {
+        var filePath = Path.Combine(_tempDirectory, "footer-hash-warning.parquet");
+
+        var warning = CaptureConsoleError(() => ParquetFileWriter.WriteAsync(
+            new[]
+            {
+                new FooterHashRow { Id = "A", Group = "north" },
+                new FooterHashRow { Id = "B", Group = "west" },
+                new FooterHashRow { Id = "A", Group = "south" },
+                new FooterHashRow { Id = "B", Group = "east" }
+            },
+            filePath,
+            indexingStrategies: new[] { new FooterHashIndexingStrategy(bucketCount: 1024) },
+            serializerOptions: new ParquetSerializerOptions
+            {
+                RowGroupSize = 2
+            }));
+
+        Assert.Contains("footer-hash", warning, StringComparison.Ordinal);
+        Assert.Contains("footer-bitmap", warning, StringComparison.Ordinal);
+        Assert.Contains("lucene", warning, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FooterBitmapIndexingStrategy_warns_when_column_cardinality_is_too_high()
+    {
+        var filePath = Path.Combine(_tempDirectory, "footer-bitmap-warning.parquet");
+
+        string warning = string.Empty;
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => CaptureConsoleErrorAsync(
+            () => ParquetFileWriter.WriteAsync(
+                new[]
+                {
+                    new FooterBitmapHighCardinalityRow { Code = "A" },
+                    new FooterBitmapHighCardinalityRow { Code = "B" },
+                    new FooterBitmapHighCardinalityRow { Code = "C" }
+                },
+                filePath,
+                indexingStrategies: new[] { new FooterBitmapIndexingStrategy(maxDistinctValues: 2) }),
+            captured => warning = captured));
+
+        Assert.Contains("low-cardinality columns", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("footer-bitmap", warning, StringComparison.Ordinal);
+        Assert.Contains("footer-hash", warning, StringComparison.Ordinal);
+        Assert.Contains("lucene", warning, StringComparison.Ordinal);
     }
 
     public Task InitializeAsync()
@@ -432,6 +499,40 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
     private static async Task SetFileMetadataAsync(string filePath, IReadOnlyDictionary<string, string> metadata)
         => await ParquetFooterMetadata.WriteAsync(filePath, metadata);
 
+    private static string CaptureConsoleError(Func<Task> action)
+    {
+        var writer = new StringWriter();
+        var previous = Console.Error;
+        Console.SetError(writer);
+        try
+        {
+            action().GetAwaiter().GetResult();
+            return writer.ToString();
+        }
+        finally
+        {
+            Console.SetError(previous);
+            writer.Dispose();
+        }
+    }
+
+    private static async Task CaptureConsoleErrorAsync(Func<Task> action, Action<string> onCompleted)
+    {
+        var writer = new StringWriter();
+        var previous = Console.Error;
+        Console.SetError(writer);
+        try
+        {
+            await action().ConfigureAwait(false);
+        }
+        finally
+        {
+            Console.SetError(previous);
+            onCompleted(writer.ToString());
+            writer.Dispose();
+        }
+    }
+
     private sealed class FooterHashRow
     {
         [ParquetFooterHashIndex]
@@ -444,6 +545,8 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
     {
         [ParquetFooterHashIndex]
         public int Id { get; set; }
+
+        public string Group { get; set; } = string.Empty;
     }
 
     private sealed class FooterBitmapRow

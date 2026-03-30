@@ -86,7 +86,7 @@ public sealed class FooterIndexPredicatePlanner<T> : IParquetPredicatePlanner<T>
         PushdownPredicate<T> predicate,
         ComparisonPushdownPredicate<T> comparison)
     {
-        if (comparison.Value is not string stringValue)
+        if (!FooterIndexValueFormatter.TryFormat(comparison.Value, out var formattedValue))
         {
             return null;
         }
@@ -97,7 +97,7 @@ public sealed class FooterIndexPredicatePlanner<T> : IParquetPredicatePlanner<T>
             return null;
         }
 
-        var bucket = FooterIndexValueFormatter.GetBucket(stringValue, index.BucketCount);
+        var bucket = FooterIndexValueFormatter.GetBucket(formattedValue, index.BucketCount);
         var entry = index.Buckets.FirstOrDefault(candidate => candidate.Bucket == bucket);
         if (entry is null)
         {
@@ -105,7 +105,7 @@ public sealed class FooterIndexPredicatePlanner<T> : IParquetPredicatePlanner<T>
                 predicate.Description,
                 mayMatch: false,
                 source: "footer-hash",
-                reason: $"The footer hash index has no bucket entry for '{stringValue}'.");
+                reason: $"The footer hash index has no bucket entry for '{formattedValue}'.");
         }
 
         var mayMatch = Array.BinarySearch(entry.RowGroups, context.RowGroupIndex) >= 0;
@@ -114,8 +114,8 @@ public sealed class FooterIndexPredicatePlanner<T> : IParquetPredicatePlanner<T>
             mayMatch,
             "footer-hash",
             mayMatch
-                ? $"The footer hash index bucket for '{stringValue}' includes row group {context.RowGroupIndex}."
-                : $"The footer hash index bucket for '{stringValue}' ruled row group {context.RowGroupIndex} out.");
+                ? $"The footer hash index bucket for '{formattedValue}' includes row group {context.RowGroupIndex}."
+                : $"The footer hash index bucket for '{formattedValue}' ruled row group {context.RowGroupIndex} out.");
     }
 
     private static FooterBitmapIndexModel? GetBitmapIndex(
