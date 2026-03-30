@@ -113,6 +113,22 @@ public sealed class InternalHelperCoverageTests
     }
 
     [Fact]
+    public void PartitionPruner_matches_partition_values_for_unix_style_paths()
+    {
+        var predicate = PushdownPredicateFactory.CreateComparison<TestRow>(
+            (Expression<Func<TestRow, string>>)(row => row.Country),
+            ComparisonOperator.Equal,
+            "DE");
+
+        var decision = Assert.Single(PartitionPruner.Evaluate(
+            "/lake/year=2024/Country=DE/part-0001.parquet",
+            new[] { predicate }));
+
+        Assert.True(decision.MayMatch);
+        Assert.Equal("Country == \"DE\"", decision.Predicate);
+    }
+
+    [Fact]
     public void PartitionPruner_handles_prefix_checks_and_unparseable_values()
     {
         var startsWithPredicate = PushdownPredicateFactory.CreateStartsWith<TestRow>(row => row.Name, "al");

@@ -89,14 +89,21 @@ internal static class PartitionPruner
     private static IReadOnlyDictionary<string, string> ExtractPartitionValues(string filePath)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var directory = Path.GetDirectoryName(filePath);
-        if (string.IsNullOrWhiteSpace(directory))
+        if (string.IsNullOrWhiteSpace(filePath))
         {
             return result;
         }
 
-        foreach (var segment in directory.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        var segments = filePath.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length <= 1)
         {
+            return result;
+        }
+
+        // The last segment is expected to be the parquet file name; only parent segments can contribute partition values.
+        for (var index = 0; index < segments.Length - 1; index++)
+        {
+            var segment = segments[index];
             var separatorIndex = segment.IndexOf('=');
             if (separatorIndex <= 0 || separatorIndex == segment.Length - 1)
             {
