@@ -8,21 +8,46 @@ using Parquet.Serialization;
 
 namespace Parquet.Query.Extensions.Writing;
 
+/// <summary>
+/// Builds reusable write plans and schemas for parquet row types.
+/// </summary>
 public static class ParquetWritePlanBuilder
 {
     private static readonly ConcurrentDictionary<Type, CachedWritePlan> CachedPlans = new();
     private static readonly ConcurrentDictionary<Type, SerializableMember[]> SerializableMembers = new();
 
+    /// <summary>
+    /// Builds the parquet schema for a row type.
+    /// </summary>
+    /// <typeparam name="T">The row type to inspect.</typeparam>
+    /// <returns>The generated parquet schema.</returns>
     public static ParquetSchema BuildSchema<T>() => BuildSchema(typeof(T));
 
+    /// <summary>
+    /// Builds the parquet schema for a row type.
+    /// </summary>
+    /// <param name="rowType">The row type to inspect.</param>
+    /// <returns>The generated parquet schema.</returns>
     public static ParquetSchema BuildSchema(Type rowType)
     {
         ArgumentNullException.ThrowIfNull(rowType);
         return GetOrCreateCachedPlan(rowType).Schema;
     }
 
+    /// <summary>
+    /// Builds a write plan for a row type.
+    /// </summary>
+    /// <typeparam name="T">The row type to inspect.</typeparam>
+    /// <param name="serializerOptions">Optional serializer overrides for the plan.</param>
+    /// <returns>The generated write plan.</returns>
     public static ParquetWritePlan Build<T>(ParquetSerializerOptions? serializerOptions = null) => Build(typeof(T), serializerOptions);
 
+    /// <summary>
+    /// Builds a write plan for a row type.
+    /// </summary>
+    /// <param name="rowType">The row type to inspect.</param>
+    /// <param name="serializerOptions">Optional serializer overrides for the plan.</param>
+    /// <returns>The generated write plan.</returns>
     public static ParquetWritePlan Build(Type rowType, ParquetSerializerOptions? serializerOptions = null)
     {
         ArgumentNullException.ThrowIfNull(rowType);

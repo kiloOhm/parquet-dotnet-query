@@ -5,16 +5,25 @@ using Parquet.Query.Pushdown;
 
 namespace Parquet.Query.Extensions.Search;
 
+/// <summary>
+/// Uses Lucene footer indexes to prune row groups for term and fuzzy term predicates.
+/// </summary>
+/// <typeparam name="T">The source row type the planner targets.</typeparam>
 public sealed class LucenePredicatePlanner<T> : IParquetPredicatePlanner<T>
     where T : class, new()
 {
     private const int MaxCacheEntries = 256;
     private static readonly ConcurrentDictionary<string, CacheEntry> Cache = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Gets a shared planner instance for the source type.
+    /// </summary>
     public static LucenePredicatePlanner<T> Instance { get; } = new();
 
+    /// <inheritdoc />
     public bool CanPlan(PushdownPredicate<T> predicate) => predicate is LuceneTermPredicate<T>;
 
+    /// <inheritdoc />
     public RowGroupPredicateDecision? TryEvaluateRowGroup(
         ParquetRowGroupPlannerContext context,
         PushdownPredicate<T> predicate)
@@ -52,6 +61,7 @@ public sealed class LucenePredicatePlanner<T> : IParquetPredicatePlanner<T>
                 : "The lucene footer term dictionary ruled the row group out.");
     }
 
+    /// <inheritdoc />
     public ValueTask<PagePruningResult?> TryPrunePagesAsync(
         ParquetPagePruningContext context,
         PushdownPredicate<T> predicate,

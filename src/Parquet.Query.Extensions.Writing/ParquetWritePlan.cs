@@ -3,6 +3,9 @@ using Parquet.Serialization;
 
 namespace Parquet.Query.Extensions.Writing;
 
+/// <summary>
+/// Describes how a row type will be serialized to parquet, including schema, columns, and indexes.
+/// </summary>
 public sealed class ParquetWritePlan
 {
     private readonly SerializerOptionsSnapshot _serializerOptions;
@@ -21,14 +24,29 @@ public sealed class ParquetWritePlan
         IndexDescriptors = indexDescriptors ?? throw new ArgumentNullException(nameof(indexDescriptors));
     }
 
+    /// <summary>
+    /// Gets the CLR row type represented by the plan.
+    /// </summary>
     public Type RowType { get; }
 
+    /// <summary>
+    /// Gets the parquet schema used when writing the row type.
+    /// </summary>
     public ParquetSchema Schema { get; }
 
+    /// <summary>
+    /// Gets the serializer options that will be applied when writing.
+    /// </summary>
     public ParquetSerializerOptions SerializerOptions => _serializerOptions.ToSerializerOptions();
 
+    /// <summary>
+    /// Gets the column mappings discovered for the row type.
+    /// </summary>
     public IReadOnlyList<ParquetColumnPlan> Columns { get; }
 
+    /// <summary>
+    /// Gets the index descriptors discovered from write attributes.
+    /// </summary>
     public IReadOnlyList<ParquetIndexDescriptor> IndexDescriptors { get; }
 
     internal ParquetSerializerOptions CreateSerializerOptions() => _serializerOptions.ToSerializerOptions();

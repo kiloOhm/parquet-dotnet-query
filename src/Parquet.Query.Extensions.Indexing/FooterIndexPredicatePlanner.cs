@@ -5,6 +5,10 @@ using Parquet.Query.Pushdown;
 
 namespace Parquet.Query.Extensions.Indexing;
 
+/// <summary>
+/// Uses footer bitmap and hash indexes to prune row groups for equality predicates.
+/// </summary>
+/// <typeparam name="T">The source row type the planner targets.</typeparam>
 public sealed class FooterIndexPredicatePlanner<T> : IParquetPredicatePlanner<T>
     where T : class, new()
 {
@@ -12,13 +16,18 @@ public sealed class FooterIndexPredicatePlanner<T> : IParquetPredicatePlanner<T>
     private static readonly ConcurrentDictionary<string, CacheEntry<FooterBitmapIndexModel?>> BitmapCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, CacheEntry<FooterHashIndexModel?>> HashCache = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Gets a shared planner instance for the source type.
+    /// </summary>
     public static FooterIndexPredicatePlanner<T> Instance { get; } = new();
 
+    /// <inheritdoc />
     public bool CanPlan(PushdownPredicate<T> predicate) =>
         predicate is ComparisonPushdownPredicate<T> comparison &&
         comparison.Operator == ComparisonOperator.Equal &&
         comparison.Value is not null;
 
+    /// <inheritdoc />
     public RowGroupPredicateDecision? TryEvaluateRowGroup(
         ParquetRowGroupPlannerContext context,
         PushdownPredicate<T> predicate)
@@ -34,6 +43,7 @@ public sealed class FooterIndexPredicatePlanner<T> : IParquetPredicatePlanner<T>
             ?? TryEvaluateHash(context, predicate, comparison);
     }
 
+    /// <inheritdoc />
     public ValueTask<PagePruningResult?> TryPrunePagesAsync(
         ParquetPagePruningContext context,
         PushdownPredicate<T> predicate,

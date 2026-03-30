@@ -3,8 +3,15 @@ using Parquet.Query.Extensions.Writing.Indexing;
 
 namespace Parquet.Query.Extensions.Indexing;
 
+/// <summary>
+/// Builds a string hash-bucket index and stores it in parquet footer metadata.
+/// </summary>
 public sealed class FooterHashIndexingStrategy : IParquetIndexingStrategy
 {
+    /// <summary>
+    /// Initializes a new footer hash indexing strategy.
+    /// </summary>
+    /// <param name="bucketCount">The number of hash buckets to use.</param>
     public FooterHashIndexingStrategy(int bucketCount = 1024)
     {
         if (bucketCount <= 0)
@@ -15,14 +22,20 @@ public sealed class FooterHashIndexingStrategy : IParquetIndexingStrategy
         BucketCount = bucketCount;
     }
 
+    /// <inheritdoc />
     public string Name => FooterIndexNames.HashStrategyName;
 
+    /// <summary>
+    /// Gets the number of hash buckets used by the index.
+    /// </summary>
     public int BucketCount { get; }
 
+    /// <inheritdoc />
     public bool CanHandle(ParquetIndexDescriptor descriptor) =>
         descriptor.Kind == ParquetIndexKind.External &&
         string.Equals(descriptor.StrategyName, FooterIndexNames.HashStrategyName, StringComparison.OrdinalIgnoreCase);
 
+    /// <inheritdoc />
     public async ValueTask ApplyAsync(
         ParquetIndexingContext context,
         ParquetIndexDescriptor descriptor,

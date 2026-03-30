@@ -3,8 +3,21 @@ using Parquet.Serialization;
 
 namespace Parquet.Query.Extensions.Writing;
 
+/// <summary>
+/// Writes rows to parquet files and applies any configured indexing strategies.
+/// </summary>
 public static class ParquetFileWriter
 {
+    /// <summary>
+    /// Serializes rows to a parquet file and builds a write plan from the row type.
+    /// </summary>
+    /// <typeparam name="T">The row type to serialize.</typeparam>
+    /// <param name="rows">The rows to write.</param>
+    /// <param name="filePath">The destination parquet file path.</param>
+    /// <param name="indexingStrategies">Optional indexing strategies to run after serialization.</param>
+    /// <param name="serializerOptions">Optional serializer overrides for the generated plan.</param>
+    /// <param name="cancellationToken">A token used to cancel the write.</param>
+    /// <returns>The write plan used for serialization.</returns>
     public static Task<ParquetWritePlan> WriteAsync<T>(
         IEnumerable<T> rows,
         string filePath,
@@ -29,6 +42,16 @@ public static class ParquetFileWriter
         return await WriteAsync(rows, filePath, writePlan, indexingStrategies, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Serializes rows to a parquet file by using a precomputed write plan.
+    /// </summary>
+    /// <typeparam name="T">The row type to serialize.</typeparam>
+    /// <param name="rows">The rows to write.</param>
+    /// <param name="filePath">The destination parquet file path.</param>
+    /// <param name="writePlan">The plan that defines schema, options, and indexes.</param>
+    /// <param name="indexingStrategies">Optional indexing strategies to run after serialization.</param>
+    /// <param name="cancellationToken">A token used to cancel the write.</param>
+    /// <returns>The write plan used for serialization.</returns>
     public static async Task<ParquetWritePlan> WriteAsync<T>(
         IEnumerable<T> rows,
         string filePath,

@@ -3,8 +3,15 @@ using Parquet.Query.Extensions.Writing.Indexing;
 
 namespace Parquet.Query.Extensions.Indexing;
 
+/// <summary>
+/// Builds a low-cardinality bitmap index and stores it in parquet footer metadata.
+/// </summary>
 public sealed class FooterBitmapIndexingStrategy : IParquetIndexingStrategy
 {
+    /// <summary>
+    /// Initializes a new footer bitmap indexing strategy.
+    /// </summary>
+    /// <param name="maxDistinctValues">The maximum number of distinct values allowed in the indexed column.</param>
     public FooterBitmapIndexingStrategy(int maxDistinctValues = 256)
     {
         if (maxDistinctValues <= 0)
@@ -15,14 +22,20 @@ public sealed class FooterBitmapIndexingStrategy : IParquetIndexingStrategy
         MaxDistinctValues = maxDistinctValues;
     }
 
+    /// <inheritdoc />
     public string Name => FooterIndexNames.BitmapStrategyName;
 
+    /// <summary>
+    /// Gets the maximum number of distinct values allowed in the indexed column.
+    /// </summary>
     public int MaxDistinctValues { get; }
 
+    /// <inheritdoc />
     public bool CanHandle(ParquetIndexDescriptor descriptor) =>
         descriptor.Kind == ParquetIndexKind.External &&
         string.Equals(descriptor.StrategyName, FooterIndexNames.BitmapStrategyName, StringComparison.OrdinalIgnoreCase);
 
+    /// <inheritdoc />
     public async ValueTask ApplyAsync(
         ParquetIndexingContext context,
         ParquetIndexDescriptor descriptor,

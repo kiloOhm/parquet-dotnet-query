@@ -11,16 +11,42 @@ using Parquet.Serialization;
 
 namespace Parquet.Query;
 
+/// <summary>
+/// Creates <see cref="ParquetQuery{TSource, TResult}"/> pipelines from files or directories.
+/// </summary>
 public static class ParquetQuery
 {
+    /// <summary>
+    /// Creates a query over a single parquet file.
+    /// </summary>
+    /// <typeparam name="T">The row type to deserialize from the file.</typeparam>
+    /// <param name="filePath">The parquet file to query.</param>
+    /// <param name="parquetOptions">Optional reader options to apply.</param>
+    /// <returns>A query that yields rows of <typeparamref name="T"/>.</returns>
     public static ParquetQuery<T, T> FromFile<T>(string filePath, ParquetOptions? parquetOptions = null)
         where T : class, new()
         => ParquetQuery<T, T>.FromFiles(new[] { filePath }, parquetOptions);
 
+    /// <summary>
+    /// Creates a query over a set of parquet files.
+    /// </summary>
+    /// <typeparam name="T">The row type to deserialize from each file.</typeparam>
+    /// <param name="filePaths">The parquet files to query.</param>
+    /// <param name="parquetOptions">Optional reader options to apply.</param>
+    /// <returns>A query that yields rows of <typeparamref name="T"/>.</returns>
     public static ParquetQuery<T, T> FromFiles<T>(IEnumerable<string> filePaths, ParquetOptions? parquetOptions = null)
         where T : class, new()
         => ParquetQuery<T, T>.FromFiles(filePaths, parquetOptions);
 
+    /// <summary>
+    /// Creates a query over all parquet files that match a search within a directory.
+    /// </summary>
+    /// <typeparam name="T">The row type to deserialize from each file.</typeparam>
+    /// <param name="directoryPath">The root directory that contains parquet files.</param>
+    /// <param name="searchPattern">The file search pattern to use.</param>
+    /// <param name="searchOption">Whether to search only the directory or all subdirectories.</param>
+    /// <param name="parquetOptions">Optional reader options to apply.</param>
+    /// <returns>A query that yields rows of <typeparamref name="T"/>.</returns>
     public static ParquetQuery<T, T> FromDirectory<T>(
         string directoryPath,
         string searchPattern = "*.parquet",
@@ -30,6 +56,11 @@ public static class ParquetQuery
         => ParquetQuery<T, T>.FromFiles(Directory.EnumerateFiles(directoryPath, searchPattern, searchOption), parquetOptions);
 }
 
+/// <summary>
+/// Represents an immutable parquet query pipeline that can be planned, explained, or executed.
+/// </summary>
+/// <typeparam name="TSource">The source row type read from parquet files.</typeparam>
+/// <typeparam name="TResult">The result type produced by the query projection.</typeparam>
 public sealed class ParquetQuery<TSource, TResult>
     where TSource : class, new()
 {
@@ -70,6 +101,12 @@ public sealed class ParquetQuery<TSource, TResult>
         _strictPushdown = strictPushdown;
     }
 
+    /// <summary>
+    /// Creates a query over a set of parquet files.
+    /// </summary>
+    /// <param name="filePaths">The parquet files to query.</param>
+    /// <param name="parquetOptions">Optional reader options to apply.</param>
+    /// <returns>A new query rooted at the provided files.</returns>
     public static ParquetQuery<TSource, TResult> FromFiles(IEnumerable<string> filePaths, ParquetOptions? parquetOptions = null)
     {
         ArgumentNullException.ThrowIfNull(filePaths);
@@ -97,6 +134,11 @@ public sealed class ParquetQuery<TSource, TResult>
             strictPushdown: false);
     }
 
+    /// <summary>
+    /// Adds explicit pushdown predicates to the query.
+    /// </summary>
+    /// <param name="filter">The filter to combine with any existing pushdown filter.</param>
+    /// <returns>A new query with the combined pushdown filter.</returns>
     public ParquetQuery<TSource, TResult> Pushdown(PushdownFilter<TSource> filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
@@ -112,9 +154,19 @@ public sealed class ParquetQuery<TSource, TResult>
             _strictPushdown);
     }
 
+    /// <summary>
+    /// Builds and applies a pushdown filter by using a fluent builder.
+    /// </summary>
+    /// <param name="configure">A callback that configures the pushdown filter builder.</param>
+    /// <returns>A new query with the configured pushdown filter.</returns>
     public ParquetQuery<TSource, TResult> Pushdown(Func<PushdownFilterBuilder<TSource>, PushdownFilterBuilder<TSource>> configure) =>
         Pushdown(global::Parquet.Query.Pushdown.Pushdown.For(configure));
 
+    /// <summary>
+    /// Adds a LINQ predicate to the query and extracts any pushdown-eligible fragments from it.
+    /// </summary>
+    /// <param name="predicate">The predicate to apply.</param>
+    /// <returns>A new query with the predicate appended.</returns>
     public ParquetQuery<TSource, TResult> Where(Expression<Func<TSource, bool>> predicate)
     {
         ArgumentNullException.ThrowIfNull(predicate);
@@ -132,6 +184,12 @@ public sealed class ParquetQuery<TSource, TResult>
             _strictPushdown);
     }
 
+    /// <summary>
+    /// Projects each matching source row into a new result shape.
+    /// </summary>
+    /// <typeparam name="TNextResult">The projected result type.</typeparam>
+    /// <param name="projection">The projection expression.</param>
+    /// <returns>A new query that yields projected values.</returns>
     public ParquetQuery<TSource, TNextResult> Select<TNextResult>(Expression<Func<TSource, TNextResult>> projection)
     {
         ArgumentNullException.ThrowIfNull(projection);
@@ -147,6 +205,11 @@ public sealed class ParquetQuery<TSource, TResult>
             _strictPushdown);
     }
 
+    /// <summary>
+    /// Controls whether non-pushdownable predicates should cause execution to fail.
+    /// </summary>
+    /// <param name="enabled"><see langword="true"/> to throw when residual predicates remain; otherwise <see langword="false"/>.</param>
+    /// <returns>A new query with the strict pushdown setting applied.</returns>
     public ParquetQuery<TSource, TResult> StrictPushdown(bool enabled = true) =>
         new(
             _filePaths,
@@ -158,12 +221,22 @@ public sealed class ParquetQuery<TSource, TResult>
             _projection,
             enabled);
 
+    /// <summary>
+    /// Adds a predicate planner that can prune row groups or pages for custom predicates.
+    /// </summary>
+    /// <param name="predicatePlanner">The planner to add.</param>
+    /// <returns>A new query with the planner registered.</returns>
     public ParquetQuery<TSource, TResult> WithPredicatePlanner(IParquetPredicatePlanner<TSource> predicatePlanner)
     {
         ArgumentNullException.ThrowIfNull(predicatePlanner);
         return WithPredicatePlanners(new[] { predicatePlanner });
     }
 
+    /// <summary>
+    /// Adds predicate planners that can prune row groups or pages for custom predicates.
+    /// </summary>
+    /// <param name="predicatePlanners">The planners to add.</param>
+    /// <returns>A new query with the planners registered.</returns>
     public ParquetQuery<TSource, TResult> WithPredicatePlanners(IEnumerable<IParquetPredicatePlanner<TSource>> predicatePlanners)
     {
         ArgumentNullException.ThrowIfNull(predicatePlanners);
@@ -184,6 +257,11 @@ public sealed class ParquetQuery<TSource, TResult>
             _strictPushdown);
     }
 
+    /// <summary>
+    /// Replaces the parquet reader options used by this query.
+    /// </summary>
+    /// <param name="parquetOptions">The options to clone into the query.</param>
+    /// <returns>A new query with the supplied parquet options.</returns>
     public ParquetQuery<TSource, TResult> WithParquetOptions(ParquetOptions parquetOptions)
     {
         ArgumentNullException.ThrowIfNull(parquetOptions);
@@ -199,6 +277,11 @@ public sealed class ParquetQuery<TSource, TResult>
             _strictPushdown);
     }
 
+    /// <summary>
+    /// Clones the current parquet options, applies a configuration callback, and returns a new query.
+    /// </summary>
+    /// <param name="configure">The callback that mutates the cloned options.</param>
+    /// <returns>A new query with the updated parquet options.</returns>
     public ParquetQuery<TSource, TResult> ConfigureParquetOptions(Action<ParquetOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
@@ -208,6 +291,12 @@ public sealed class ParquetQuery<TSource, TResult>
         return WithParquetOptions(options);
     }
 
+    /// <summary>
+    /// Configures footer encryption for all queried files.
+    /// </summary>
+    /// <param name="footerEncryptionKey">The encryption key to use for footer metadata.</param>
+    /// <param name="keyMetadata">Optional key metadata associated with the key.</param>
+    /// <returns>A new query with footer encryption options applied.</returns>
     public ParquetQuery<TSource, TResult> WithFooterKey(string footerEncryptionKey, byte[]? keyMetadata = null) =>
         ConfigureParquetOptions(options =>
         {
@@ -215,6 +304,12 @@ public sealed class ParquetQuery<TSource, TResult>
             options.FooterEncryptionKeyMetadata = keyMetadata?.ToArray();
         });
 
+    /// <summary>
+    /// Configures footer signing for all queried files.
+    /// </summary>
+    /// <param name="footerSigningKey">The signing key to use for footer metadata.</param>
+    /// <param name="keyMetadata">Optional key metadata associated with the key.</param>
+    /// <returns>A new query with footer signing options applied.</returns>
     public ParquetQuery<TSource, TResult> WithFooterSigningKey(string footerSigningKey, byte[]? keyMetadata = null) =>
         ConfigureParquetOptions(options =>
         {
@@ -222,9 +317,20 @@ public sealed class ParquetQuery<TSource, TResult>
             options.FooterSigningKeyMetadata = keyMetadata?.ToArray();
         });
 
+    /// <summary>
+    /// Configures whether the query should expect plaintext parquet footers.
+    /// </summary>
+    /// <param name="enabled"><see langword="true"/> to use plaintext footers; otherwise <see langword="false"/>.</param>
+    /// <returns>A new query with the footer mode applied.</returns>
     public ParquetQuery<TSource, TResult> UsePlaintextFooter(bool enabled = true) =>
         ConfigureParquetOptions(options => options.UsePlaintextFooter = enabled);
 
+    /// <summary>
+    /// Configures the AAD prefix used for encrypted parquet files.
+    /// </summary>
+    /// <param name="aadPrefix">The AAD prefix to apply.</param>
+    /// <param name="supplyOutOfBand"><see langword="true"/> to indicate the prefix is supplied out of band.</param>
+    /// <returns>A new query with the AAD settings applied.</returns>
     public ParquetQuery<TSource, TResult> WithAadPrefix(string aadPrefix, bool supplyOutOfBand = false) =>
         ConfigureParquetOptions(options =>
         {
@@ -232,18 +338,38 @@ public sealed class ParquetQuery<TSource, TResult>
             options.SupplyAadPrefix = supplyOutOfBand;
         });
 
+    /// <summary>
+    /// Configures whether AES CTR mode variants should be used for parquet encryption.
+    /// </summary>
+    /// <param name="enabled"><see langword="true"/> to enable CTR variants; otherwise <see langword="false"/>.</param>
+    /// <returns>A new query with the encryption setting applied.</returns>
     public ParquetQuery<TSource, TResult> UseCtrVariant(bool enabled = true) =>
         ConfigureParquetOptions(options => options.UseCtrVariant = enabled);
 
+    /// <summary>
+    /// Configures how column encryption keys are resolved.
+    /// </summary>
+    /// <param name="resolver">A callback that resolves keys for a column path and optional key metadata.</param>
+    /// <returns>A new query with the resolver applied.</returns>
     public ParquetQuery<TSource, TResult> WithColumnKeyResolver(Func<IReadOnlyList<string>, byte[]?, string?> resolver) =>
         ConfigureParquetOptions(options => options.ColumnKeyResolver = resolver);
 
+    /// <summary>
+    /// Builds a plan that describes which files, row groups, pages, and columns the query will read.
+    /// </summary>
+    /// <param name="cancellationToken">A token used to cancel planning.</param>
+    /// <returns>The computed query plan.</returns>
     public async Task<ParquetQueryPlan> PlanAsync(CancellationToken cancellationToken = default)
     {
         var executionPlan = await BuildExecutionPlanAsync(cancellationToken);
         return executionPlan.QueryPlan;
     }
 
+    /// <summary>
+    /// Produces a human-readable explanation of the current query plan.
+    /// </summary>
+    /// <param name="cancellationToken">A token used to cancel planning.</param>
+    /// <returns>A textual explanation of the query.</returns>
     public async Task<string> ExplainAsync(CancellationToken cancellationToken = default)
     {
         var executionPlan = await BuildExecutionPlanAsync(cancellationToken);
@@ -319,6 +445,11 @@ public sealed class ParquetQuery<TSource, TResult>
         return builder.ToString().TrimEnd();
     }
 
+    /// <summary>
+    /// Counts the rows that match the current query.
+    /// </summary>
+    /// <param name="cancellationToken">A token used to cancel execution.</param>
+    /// <returns>The number of matching rows.</returns>
     public async Task<long> CountAsync(CancellationToken cancellationToken = default)
     {
         if (_pushdownFilter.IsEmpty && _wherePredicates.Count == 0)
@@ -338,9 +469,19 @@ public sealed class ParquetQuery<TSource, TResult>
         return count;
     }
 
+    /// <summary>
+    /// Counts the rows that match the current query.
+    /// </summary>
+    /// <param name="cancellationToken">A token used to cancel execution.</param>
+    /// <returns>The number of matching rows.</returns>
     public Task<long> LongCountAsync(CancellationToken cancellationToken = default) =>
         CountAsync(cancellationToken);
 
+    /// <summary>
+    /// Determines whether the query returns at least one matching row.
+    /// </summary>
+    /// <param name="cancellationToken">A token used to cancel execution.</param>
+    /// <returns><see langword="true"/> when a matching row exists; otherwise <see langword="false"/>.</returns>
     public async Task<bool> AnyAsync(CancellationToken cancellationToken = default)
     {
         if (_pushdownFilter.IsEmpty && _wherePredicates.Count == 0)
@@ -362,6 +503,11 @@ public sealed class ParquetQuery<TSource, TResult>
         return false;
     }
 
+    /// <summary>
+    /// Returns the first matching result or the default value when the query is empty.
+    /// </summary>
+    /// <param name="cancellationToken">A token used to cancel execution.</param>
+    /// <returns>The first matching result, or the default value of <typeparamref name="TResult"/>.</returns>
     public async Task<TResult?> FirstOrDefaultAsync(CancellationToken cancellationToken = default)
     {
         await foreach (var result in EnumerateResultsAsync(cancellationToken))
@@ -372,6 +518,11 @@ public sealed class ParquetQuery<TSource, TResult>
         return default;
     }
 
+    /// <summary>
+    /// Materializes the query into an in-memory list.
+    /// </summary>
+    /// <param name="cancellationToken">A token used to cancel execution.</param>
+    /// <returns>A list containing all matching results.</returns>
     public async Task<IReadOnlyList<TResult>> ToListAsync(CancellationToken cancellationToken = default)
     {
         var results = new List<TResult>();
@@ -383,6 +534,11 @@ public sealed class ParquetQuery<TSource, TResult>
         return results;
     }
 
+    /// <summary>
+    /// Streams the query results asynchronously.
+    /// </summary>
+    /// <param name="cancellationToken">A token used to cancel execution.</param>
+    /// <returns>An asynchronous sequence of query results.</returns>
     public async IAsyncEnumerable<TResult> ToAsyncEnumerable([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         await foreach (var result in EnumerateResultsAsync(cancellationToken))

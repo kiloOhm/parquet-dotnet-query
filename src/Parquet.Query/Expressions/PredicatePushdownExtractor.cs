@@ -5,8 +5,17 @@ using Parquet.Query.Pushdown;
 
 namespace Parquet.Query.Expressions;
 
+/// <summary>
+/// Extracts pushdown-eligible predicates from LINQ boolean expressions.
+/// </summary>
 public static class PredicatePushdownExtractor
 {
+    /// <summary>
+    /// Splits a predicate into pushdownable fragments and residual expressions.
+    /// </summary>
+    /// <typeparam name="T">The source row type the predicate targets.</typeparam>
+    /// <param name="predicate">The predicate to analyze.</param>
+    /// <returns>The extracted pushdown split.</returns>
     public static PredicatePushdownSplit<T> Extract<T>(Expression<Func<T, bool>> predicate)
     {
         ArgumentNullException.ThrowIfNull(predicate);

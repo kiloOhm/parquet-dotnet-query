@@ -4,14 +4,20 @@ using Parquet.Schema;
 
 namespace Parquet.Query.Extensions.Search;
 
+/// <summary>
+/// Builds a Lucene-style term dictionary index and stores it in parquet footer metadata.
+/// </summary>
 public sealed class LuceneFooterIndexingStrategy : IParquetIndexingStrategy
 {
+    /// <inheritdoc />
     public string Name => LuceneIndexNames.StrategyName;
 
+    /// <inheritdoc />
     public bool CanHandle(ParquetIndexDescriptor descriptor) =>
         descriptor.Kind == ParquetIndexKind.External &&
         string.Equals(descriptor.StrategyName, LuceneIndexNames.StrategyName, StringComparison.OrdinalIgnoreCase);
 
+    /// <inheritdoc />
     public async ValueTask ApplyAsync(
         ParquetIndexingContext context,
         ParquetIndexDescriptor descriptor,
