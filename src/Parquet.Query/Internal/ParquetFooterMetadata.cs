@@ -164,10 +164,12 @@ internal static class ParquetFooterMetadata
         byte[] footerBytes,
         ParquetOptions? parquetOptions)
     {
-        if (string.IsNullOrWhiteSpace(parquetOptions?.FooterEncryptionKey))
+        if (parquetOptions is null || string.IsNullOrWhiteSpace(parquetOptions.FooterEncryptionKey))
         {
             throw new InvalidDataException($"{nameof(ParquetOptions.FooterEncryptionKey)} is required for files with encrypted footers.");
         }
+
+        var footerEncryptionKey = parquetOptions.FooterEncryptionKey;
 
         var tailLength = fileBytes.Length - 8 - footerStart;
         var encryptionBaseType = typeof(ParquetReader).Assembly.GetType("Parquet.Encryption.EncryptionBase", throwOnError: true)
@@ -186,7 +188,7 @@ internal static class ParquetFooterMetadata
             ?? throw new InvalidOperationException("EncryptionBase.CreateFromCryptoMeta could not be found.");
         var encrypter = createFromCryptoMeta.Invoke(
             obj: null,
-            parameters: new object?[] { protocolReader, parquetOptions.FooterEncryptionKey, parquetOptions.AADPrefix })
+            parameters: new object?[] { protocolReader, footerEncryptionKey, parquetOptions.AADPrefix })
             ?? throw new InvalidOperationException("EncryptionBase.CreateFromCryptoMeta returned null.");
 
         var cryptoMetadataLength = checked((int)tailStream.Position);
@@ -212,10 +214,15 @@ internal static class ParquetFooterMetadata
         EncryptionAlgorithm algorithm,
         ParquetOptions? parquetOptions)
     {
-        if (string.IsNullOrWhiteSpace(parquetOptions?.FooterSigningKey))
+#if NET48
+        throw new PlatformNotSupportedException("Signed plaintext footer metadata rewrites require AES-GCM, which is not available on .NET Framework 4.8.");
+#else
+        if (parquetOptions is null || string.IsNullOrWhiteSpace(parquetOptions.FooterSigningKey))
         {
             throw new InvalidDataException($"{nameof(ParquetOptions.FooterSigningKey)} is required to rewrite signed plaintext footers.");
         }
+
+        var footerSigningKey = parquetOptions.FooterSigningKey;
 
         var encryptionBaseType = typeof(ParquetReader).Assembly.GetType("Parquet.Encryption.EncryptionBase", throwOnError: true)
             ?? throw new InvalidOperationException("Parquet.Encryption.EncryptionBase could not be loaded.");
@@ -228,17 +235,14 @@ internal static class ParquetFooterMetadata
             ?? throw new InvalidOperationException("EncryptionBase.CreateFromAlgorithm could not be found.");
         var signer = createFromAlgorithm.Invoke(
             obj: null,
-            parameters: new object?[] { algorithm, parquetOptions.FooterSigningKey, parquetOptions.AADPrefix })
+            parameters: new object?[] { algorithm, footerSigningKey, parquetOptions.AADPrefix })
             ?? throw new InvalidOperationException("EncryptionBase.CreateFromAlgorithm returned null.");
 
-        var buildAadMethod = encryptionBaseType.GetMethod(
-            "BuildAad",
-            BindingFlags.Instance | BindingFlags.NonPublic,
-            binder: null,
-            types: new[] { typeof(ParquetModules) },
-            modifiers: null)
+        var buildAadMethod = encryptionBaseType
+            .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+            .FirstOrDefault(method => string.Equals(method.Name, "BuildAad", StringComparison.Ordinal))
             ?? throw new InvalidOperationException("EncryptionBase.BuildAad could not be found.");
-        var aad = (byte[]?)buildAadMethod.Invoke(signer, new object[] { ParquetModules.Footer })
+        var aad = (byte[]?)buildAadMethod.Invoke(signer, new object?[] { ParquetModules.Footer, null, null, null })
             ?? throw new InvalidOperationException("EncryptionBase.BuildAad returned null.");
 
         var footerKeyProperty = encryptionBaseType.GetProperty(
@@ -264,6 +268,7 @@ internal static class ParquetFooterMetadata
         output.Write(tag, 0, tag.Length);
         output.Write(BitConverter.GetBytes(footerBytes.Length + nonce.Length + tag.Length), 0, sizeof(int));
         output.Write(System.Text.Encoding.ASCII.GetBytes("PAR1"), 0, 4);
+#endif
     }
 
     private static byte[] ComputeGcmTag(byte[] key, byte[] nonce, byte[] plaintext, byte[] aad)

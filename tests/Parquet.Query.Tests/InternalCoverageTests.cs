@@ -150,7 +150,7 @@ public sealed class InternalCoverageTests
 
             var fullPlan = GetFullMaterializationPlan<CollectionRow>();
 
-            await using var stream = System.IO.File.OpenRead(filePath);
+            using var stream = System.IO.File.OpenRead(filePath);
             using var reader = await Parquet.ParquetReader.CreateAsync(stream);
 
             var deferredRows = await InvokeReadRowGroupAsync<CollectionRow>(reader, deferredPlan);

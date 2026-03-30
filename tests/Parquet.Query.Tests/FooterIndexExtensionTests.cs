@@ -87,7 +87,7 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
         var filePath = Path.Combine(_tempDirectory, "footer-hash-encrypted.parquet");
         const string footerKey = "0123456789ABCDEF";
 
-        await ParquetFileWriter.WriteAsync(
+        if (!await TryWriteEncryptedAsync(() => ParquetFileWriter.WriteAsync(
             new[]
             {
                 new FooterHashRow { Id = "key-100", Group = "north" },
@@ -104,7 +104,10 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
                 {
                     FooterEncryptionKey = footerKey
                 }
-            });
+            })))
+        {
+            return;
+        }
 
         var query = ParquetQuery
             .FromFile<FooterHashRow>(filePath)
@@ -128,7 +131,7 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
         var filePath = Path.Combine(_tempDirectory, "footer-bitmap-encrypted.parquet");
         const string footerKey = "0123456789ABCDEF";
 
-        await ParquetFileWriter.WriteAsync(
+        if (!await TryWriteEncryptedAsync(() => ParquetFileWriter.WriteAsync(
             new[]
             {
                 new FooterBitmapRow { Id = "1", Group = "alpha" },
@@ -145,11 +148,138 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
                 {
                     FooterEncryptionKey = footerKey
                 }
-            });
+            })))
+        {
+            return;
+        }
 
         var query = ParquetQuery
             .FromFile<FooterBitmapRow>(filePath)
             .WithFooterKey(footerKey)
+            .WithFooterIndexes()
+            .Pushdown(filter => filter.Eq(row => row.Group, "bravo"));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.Equal(new[] { "3" }, rows.Select(row => row.Id).ToArray());
+        Assert.Equal(2, plan.RowGroups.Count);
+        Assert.False(plan.RowGroups[0].ShouldRead);
+        Assert.True(plan.RowGroups[1].ShouldRead);
+        Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source.Contains("footer-bitmap", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WriteAsync_builds_footer_hash_index_for_column_encrypted_files()
+    {
+        var filePath = Path.Combine(_tempDirectory, "footer-hash-column-encrypted.parquet");
+        const string footerKey = "FEDCBA9876543210";
+        const string columnKey = "0011223344556677";
+        var keyMetadata = System.Text.Encoding.UTF8.GetBytes("footer-hash-id-key");
+
+        if (!await TryWriteEncryptedAsync(() => ParquetFileWriter.WriteAsync(
+            new[]
+            {
+                new FooterHashRow { Id = "key-100", Group = "north" },
+                new FooterHashRow { Id = "key-300", Group = "west" },
+                new FooterHashRow { Id = "key-200", Group = "south" },
+                new FooterHashRow { Id = "key-400", Group = "east" }
+            },
+            filePath,
+            indexingStrategies: new[] { new FooterHashIndexingStrategy(bucketCount: 65536) },
+            serializerOptions: new ParquetSerializerOptions
+            {
+                RowGroupSize = 2,
+                ParquetOptions = new ParquetOptions
+                {
+                    FooterEncryptionKey = footerKey,
+                    ColumnKeyResolver = (path, metadata) =>
+                    {
+                        if (path.Count > 0 &&
+                            string.Equals(path[path.Count - 1], "Id", StringComparison.Ordinal) &&
+                            metadata is not null &&
+                            metadata.SequenceEqual(keyMetadata))
+                        {
+                            return columnKey;
+                        }
+
+                        return null;
+                    },
+                    ColumnKeys =
+                    {
+                        ["Id"] = new ParquetOptions.ColumnKeySpec(columnKey, keyMetadata)
+                    }
+                }
+            })))
+        {
+            return;
+        }
+
+        var query = ParquetQuery
+            .FromFile<FooterHashRow>(filePath)
+            .WithFooterKey(footerKey)
+            .WithColumnKeyResolver((path, metadata) =>
+            {
+                if (path.Count > 0 &&
+                    string.Equals(path[path.Count - 1], "Id", StringComparison.Ordinal) &&
+                    metadata is not null &&
+                    metadata.SequenceEqual(keyMetadata))
+                {
+                    return columnKey;
+                }
+
+                return null;
+            })
+            .WithFooterIndexes()
+            .Pushdown(filter => filter.Eq(row => row.Id, "key-200"));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.Equal(new[] { "key-200" }, rows.Select(row => row.Id).ToArray());
+        Assert.Equal(2, plan.RowGroups.Count);
+        Assert.False(plan.RowGroups[0].ShouldRead);
+        Assert.True(plan.RowGroups[1].ShouldRead);
+        Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source.Contains("footer-hash", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WriteAsync_preserves_signed_plaintext_footers_for_footer_indexes()
+    {
+        var filePath = Path.Combine(_tempDirectory, "footer-bitmap-signed.parquet");
+        const string footerSigningKey = "0011223344556677";
+        const string aadPrefix = "footer-index-tests";
+
+        if (!await TryWriteEncryptedAsync(() => ParquetFileWriter.WriteAsync(
+            new[]
+            {
+                new FooterBitmapRow { Id = "1", Group = "alpha" },
+                new FooterBitmapRow { Id = "2", Group = "charlie" },
+                new FooterBitmapRow { Id = "3", Group = "bravo" },
+                new FooterBitmapRow { Id = "4", Group = "delta" }
+            },
+            filePath,
+            indexingStrategies: new[] { new FooterBitmapIndexingStrategy() },
+            serializerOptions: new ParquetSerializerOptions
+            {
+                RowGroupSize = 2,
+                ParquetOptions = new ParquetOptions
+                {
+                    UsePlaintextFooter = true,
+                    FooterSigningKey = footerSigningKey,
+                    AADPrefix = aadPrefix,
+                    SupplyAadPrefix = true
+                }
+            })))
+        {
+            return;
+        }
+
+        var query = ParquetQuery
+            .FromFile<FooterBitmapRow>(filePath)
+            .UsePlaintextFooter()
+            .WithFooterSigningKey(footerSigningKey)
+            .WithAadPrefix(aadPrefix, supplyOutOfBand: true)
             .WithFooterIndexes()
             .Pushdown(filter => filter.Eq(row => row.Group, "bravo"));
 
@@ -287,12 +417,24 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
+    private static async Task<bool> TryWriteEncryptedAsync(Func<Task> action)
+    {
+#if NET48
+        var exception = await Assert.ThrowsAsync<PlatformNotSupportedException>(action);
+        Assert.Contains("AES-GCM", exception.Message, StringComparison.Ordinal);
+        return false;
+#else
+        await action();
+        return true;
+#endif
+    }
+
     private static async Task SetFileMetadataAsync(string filePath, IReadOnlyDictionary<string, string> metadata)
         => await ParquetFooterMetadata.WriteAsync(filePath, metadata);
 
     private sealed class FooterHashRow
     {
-        [ParquetExternalIndex(FooterIndexNames.HashStrategyName)]
+        [ParquetFooterHashIndex]
         public string Id { get; set; } = string.Empty;
 
         public string Group { get; set; } = string.Empty;
@@ -300,7 +442,7 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
 
     private sealed class NumericHashRow
     {
-        [ParquetExternalIndex(FooterIndexNames.HashStrategyName)]
+        [ParquetFooterHashIndex]
         public int Id { get; set; }
     }
 
@@ -308,7 +450,7 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
     {
         public string Id { get; set; } = string.Empty;
 
-        [ParquetExternalIndex(FooterIndexNames.BitmapStrategyName)]
+        [ParquetFooterBitmapIndex]
         public string Group { get; set; } = string.Empty;
     }
 
@@ -321,7 +463,7 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
 
     private sealed class FooterBitmapHighCardinalityRow
     {
-        [ParquetExternalIndex(FooterIndexNames.BitmapStrategyName)]
+        [ParquetFooterBitmapIndex]
         public string Code { get; set; } = string.Empty;
     }
 }

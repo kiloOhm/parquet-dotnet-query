@@ -110,7 +110,7 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
         var filePath = Path.Combine(_tempDirectory, "lucene-encrypted.parquet");
         const string footerKey = "0123456789ABCDEF";
 
-        await ParquetFileWriter.WriteAsync(
+        if (!await TryWriteEncryptedAsync(() => ParquetFileWriter.WriteAsync(
             new[]
             {
                 new SearchRow { Id = 1, Name = "Berlin Travel" },
@@ -127,7 +127,10 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
                 {
                     FooterEncryptionKey = footerKey
                 }
-            });
+            })))
+        {
+            return;
+        }
 
         var query = ParquetQuery
             .FromFile<SearchRow>(filePath)
@@ -337,9 +340,21 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
+    private static async Task<bool> TryWriteEncryptedAsync(Func<Task> action)
+    {
+#if NET48
+        var exception = await Assert.ThrowsAsync<PlatformNotSupportedException>(action);
+        Assert.Contains("AES-GCM", exception.Message, StringComparison.Ordinal);
+        return false;
+#else
+        await action();
+        return true;
+#endif
+    }
+
     private static async Task SetFileMetadataAsync(string filePath, IReadOnlyDictionary<string, string> metadata)
     {
-        var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
+        var fileBytes = System.IO.File.ReadAllBytes(filePath);
 
         using var input = new MemoryStream(fileBytes, writable: false);
         using var reader = await Parquet.ParquetReader.CreateAsync(input);
@@ -355,7 +370,7 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
         var footerStart = fileBytes.Length - 8 - originalFooterLength;
 
         using var output = new MemoryStream();
-        await output.WriteAsync(fileBytes.AsMemory(0, footerStart));
+        await output.WriteAsync(fileBytes, 0, footerStart);
 
         var footerType = typeof(Parquet.ParquetReader).Assembly.GetType("Parquet.File.ThriftFooter", throwOnError: true)
             ?? throw new InvalidOperationException("Parquet.File.ThriftFooter could not be loaded.");
@@ -369,17 +384,17 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
             modifiers: null)
             ?? throw new InvalidOperationException("Parquet.File.ThriftFooter.Write(Stream) could not be found.");
         var newFooterLength = checked(Convert.ToInt32(writeMethod.Invoke(footer, new object[] { output })));
-        await output.WriteAsync(BitConverter.GetBytes(newFooterLength));
-        await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PAR1"));
+        await output.WriteAsync(BitConverter.GetBytes(newFooterLength), 0, sizeof(int));
+        await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PAR1"), 0, 4);
 
-        await System.IO.File.WriteAllBytesAsync(filePath, output.ToArray());
+        System.IO.File.WriteAllBytes(filePath, output.ToArray());
     }
 
     private sealed class SearchRow
     {
         public int Id { get; set; }
 
-        [ParquetExternalIndex(LuceneIndexNames.StrategyName)]
+        [ParquetLuceneIndex]
         public string Name { get; set; } = string.Empty;
     }
 
@@ -394,7 +409,7 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
     {
         public int Id { get; set; }
 
-        [ParquetExternalIndex(LuceneIndexNames.StrategyName)]
+        [ParquetLuceneIndex]
         public int Code { get; set; }
     }
 }

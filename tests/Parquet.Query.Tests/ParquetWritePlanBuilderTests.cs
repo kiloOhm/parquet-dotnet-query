@@ -32,7 +32,11 @@ public sealed class ParquetWritePlanBuilderTests : IAsyncLifetime
         var plan = ParquetWritePlanBuilder.Build<OptimizedWriteRow>();
 
         Assert.Equal(CompressionMethod.Zstd, plan.SerializerOptions.CompressionMethod);
+#if NET48
+        Assert.Equal(CompressionLevel.Optimal, plan.SerializerOptions.CompressionLevel);
+#else
         Assert.Equal(CompressionLevel.SmallestSize, plan.SerializerOptions.CompressionLevel);
+#endif
         Assert.Equal(256, plan.SerializerOptions.RowGroupSize);
 
         Assert.Contains(plan.Columns, column => column.MemberPath == nameof(OptimizedWriteRow.EventName) && column.ColumnPath == "event_name");
@@ -150,7 +154,11 @@ public sealed class ParquetWritePlanBuilderTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
+#if NET48
+    [ParquetWriteOptions(CompressionMethod = CompressionMethod.Zstd, CompressionLevel = CompressionLevel.Optimal, RowGroupSize = 256)]
+#else
     [ParquetWriteOptions(CompressionMethod = CompressionMethod.Zstd, CompressionLevel = CompressionLevel.SmallestSize, RowGroupSize = 256)]
+#endif
     private sealed class OptimizedWriteRow
     {
         [JsonPropertyName("id")]
@@ -192,7 +200,7 @@ public sealed class ParquetWritePlanBuilderTests : IAsyncLifetime
         public ValueTask ApplyAsync(ParquetIndexingContext context, ParquetIndexDescriptor descriptor, CancellationToken cancellationToken = default)
         {
             Applied.Add((context.FilePath, descriptor));
-            return ValueTask.CompletedTask;
+            return default;
         }
     }
 }

@@ -1,3 +1,4 @@
+using Parquet;
 using Parquet.Query.Extensions.Pooling;
 using Parquet.Serialization;
 
@@ -52,6 +53,46 @@ public sealed class ParquetReaderPoolExtensionTests : IAsyncLifetime
 
         var query = ParquetQuery
             .FromFile<PoolRow>(filePath)
+            .WithReaderPool(pool)
+            .Where(row => row.Id >= 3);
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.Equal(new[] { 3, 4 }, rows.Select(row => row.Id).ToArray());
+        Assert.Equal(2, plan.RowGroups.Count);
+    }
+
+    [Fact]
+    public async Task WithReaderPool_reads_footer_encrypted_files_when_prewarmed_with_matching_options()
+    {
+        var filePath = Path.Combine(_tempDirectory, "query-encrypted.parquet");
+        const string footerKey = "0123456789ABCDEF";
+        if (!await TryWriteEncryptedAsync(() => WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new PoolRow { Id = 1, Name = "alpha" },
+                new PoolRow { Id = 2, Name = "bravo" },
+                new PoolRow { Id = 3, Name = "charlie" },
+                new PoolRow { Id = 4, Name = "delta" }
+            },
+            options => options.FooterEncryptionKey = footerKey)))
+        {
+            return;
+        }
+
+        var parquetOptions = new ParquetOptions
+        {
+            FooterEncryptionKey = footerKey
+        };
+
+        await using var pool = new ParquetReaderPool();
+        await pool.PrewarmAsync(filePath, readerCount: 2, parquetOptions);
+
+        var query = ParquetQuery
+            .FromFile<PoolRow>(filePath)
+            .WithFooterKey(footerKey)
             .WithReaderPool(pool)
             .Where(row => row.Id >= 3);
 
@@ -123,14 +164,35 @@ public sealed class ParquetReaderPoolExtensionTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
-    private static Task WriteRowsAsync(string filePath, IReadOnlyCollection<PoolRow> rows) =>
-        ParquetSerializer.SerializeAsync(
+    private static async Task<bool> TryWriteEncryptedAsync(Func<Task> action)
+    {
+#if NET48
+        var exception = await Assert.ThrowsAsync<PlatformNotSupportedException>(action);
+        Assert.Contains("AES-GCM", exception.Message, StringComparison.Ordinal);
+        return false;
+#else
+        await action();
+        return true;
+#endif
+    }
+
+    private static Task WriteRowsAsync(
+        string filePath,
+        IReadOnlyCollection<PoolRow> rows,
+        Action<ParquetOptions>? configureOptions = null)
+    {
+        var parquetOptions = new ParquetOptions();
+        configureOptions?.Invoke(parquetOptions);
+
+        return ParquetSerializer.SerializeAsync(
             rows,
             filePath,
             new ParquetSerializerOptions
             {
-                RowGroupSize = 2
+                RowGroupSize = 2,
+                ParquetOptions = parquetOptions
             });
+    }
 
     private sealed class PoolRow
     {

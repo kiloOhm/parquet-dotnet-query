@@ -132,14 +132,14 @@ public sealed class ParquetQueryCacheTests : IAsyncLifetime
         {
             GetCount++;
             _entries.TryGetValue(key, out object? value);
-            return ValueTask.FromResult(value);
+            return new ValueTask<object?>(value);
         }
 
         public ValueTask SetAsync(string key, object value, CancellationToken cancellationToken = default)
         {
             SetCount++;
             _entries[key] = value;
-            return ValueTask.CompletedTask;
+            return default;
         }
     }
 
@@ -166,12 +166,12 @@ public sealed class ParquetQueryCacheTests : IAsyncLifetime
             }
             catch
             {
-                await stream.DisposeAsync().ConfigureAwait(false);
+                stream.Dispose();
                 throw;
             }
         }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync() => default;
 
         private sealed class CountingLease : IParquetReaderLease
         {
@@ -195,7 +195,7 @@ public sealed class ParquetQueryCacheTests : IAsyncLifetime
 
                 _disposed = true;
                 Reader.Dispose();
-                await _stream.DisposeAsync().ConfigureAwait(false);
+                _stream.Dispose();
             }
         }
     }

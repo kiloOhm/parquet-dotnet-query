@@ -453,6 +453,40 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Equality_pushdown_uses_bloom_filters_for_footer_encrypted_files()
+    {
+        var filePath = Path.Combine(_tempDirectory, "bloom-encrypted.parquet");
+        const string footerKey = "0123456789ABCDEF";
+        if (!await TryWriteEncryptedAsync(() => WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "apple", Age = 10 },
+                new TestRow { Id = 2, Country = "DE", Name = "carrot", Age = 11 },
+                new TestRow { Id = 3, Country = "DE", Name = "banana", Age = 12 },
+                new TestRow { Id = 4, Country = "DE", Name = "blueberry", Age = 13 }
+            },
+            options => options.FooterEncryptionKey = footerKey)))
+        {
+            return;
+        }
+
+        var query = ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .WithFooterKey(footerKey)
+            .Pushdown(filter => filter.Eq(row => row.Name, "banana"));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        var row = Assert.Single(rows);
+        Assert.Equal("banana", row.Name);
+        Assert.Contains(
+            plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions),
+            decision => decision.Source is "statistics" or "statistics+bloom" or "bloom");
+    }
+
+    [Fact]
     public async Task Pushdown_builder_and_statistics_prune_supported_comparison_operators()
     {
         var filePath = Path.Combine(_tempDirectory, "comparison-operators.parquet");
@@ -1212,7 +1246,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     {
         var filePath = Path.Combine(_tempDirectory, "footer-encrypted.parquet");
         const string footerKey = "0123456789ABCDEF";
-        await WriteRowsAsync(
+        if (!await TryWriteEncryptedAsync(() => WriteRowsAsync(
             filePath,
             new[]
             {
@@ -1222,7 +1256,10 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             options =>
             {
                 options.FooterEncryptionKey = footerKey;
-            });
+            })))
+        {
+            return;
+        }
 
         await Assert.ThrowsAnyAsync<Exception>(() =>
             ParquetQuery
@@ -1245,7 +1282,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         const string footerKey = "FEDCBA9876543210";
         const string columnKey = "0011223344556677";
 
-        await WriteRowsAsync(
+        if (!await TryWriteEncryptedAsync(() => WriteRowsAsync(
             filePath,
             new[]
             {
@@ -1256,7 +1293,10 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             {
                 options.FooterEncryptionKey = footerKey;
                 options.ColumnKeys["Name"] = new ParquetOptions.ColumnKeySpec(columnKey, keyMetadata);
-            });
+            })))
+        {
+            return;
+        }
 
         await Assert.ThrowsAnyAsync<Exception>(() =>
             ParquetQuery
@@ -1271,7 +1311,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             .WithColumnKeyResolver((path, metadata) =>
             {
                 if (path.Count > 0 &&
-                    string.Equals(path[^1], "Name", StringComparison.Ordinal) &&
+                    string.Equals(path[path.Count - 1], "Name", StringComparison.Ordinal) &&
                     metadata is not null &&
                     metadata.SequenceEqual(keyMetadata))
                 {
@@ -1292,7 +1332,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         var filePath = Path.Combine(_tempDirectory, "footer-encrypted-page-indexes.parquet");
         const string footerKey = "0123456789ABCDEF";
 
-        await WriteRowsAsync(
+        if (!await TryWriteEncryptedAsync(() => WriteRowsAsync(
             filePath,
             Enumerable.Range(1, 6)
                 .Select(age => new TestRow { Id = age, Country = "DE", Name = $"row-{age}", Age = age })
@@ -1302,7 +1342,10 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
                 options.FooterEncryptionKey = footerKey;
                 options.DataPageRowCountLimit = 2;
             },
-            serializer => serializer.RowGroupSize = 6);
+            serializer => serializer.RowGroupSize = 6)))
+        {
+            return;
+        }
 
         var query = ParquetQuery
             .FromFile<TestRow>(filePath)
@@ -1327,7 +1370,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         const string columnKey = "0011223344556677";
         var keyMetadata = System.Text.Encoding.UTF8.GetBytes("age-column-key");
 
-        await WriteRowsAsync(
+        if (!await TryWriteEncryptedAsync(() => WriteRowsAsync(
             filePath,
             Enumerable.Range(1, 6)
                 .Select(age => new TestRow { Id = age, Country = "DE", Name = $"row-{age}", Age = age })
@@ -1338,7 +1381,10 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
                 options.ColumnKeys["Age"] = new ParquetOptions.ColumnKeySpec(columnKey, keyMetadata);
                 options.DataPageRowCountLimit = 2;
             },
-            serializer => serializer.RowGroupSize = 6);
+            serializer => serializer.RowGroupSize = 6)))
+        {
+            return;
+        }
 
         var query = ParquetQuery
             .FromFile<TestRow>(filePath)
@@ -1346,7 +1392,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             .WithColumnKeyResolver((path, metadata) =>
             {
                 if (path.Count > 0 &&
-                    string.Equals(path[^1], "Age", StringComparison.Ordinal) &&
+                    string.Equals(path[path.Count - 1], "Age", StringComparison.Ordinal) &&
                     metadata is not null &&
                     metadata.SequenceEqual(keyMetadata))
                 {
@@ -1401,7 +1447,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             FooterEncryptionKey = footerKey
         };
 
-        await WriteRowsAsync(
+        if (!await TryWriteEncryptedAsync(() => WriteRowsAsync(
             filePath,
             new[]
             {
@@ -1411,7 +1457,10 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             writeOptions =>
             {
                 writeOptions.FooterEncryptionKey = footerKey;
-            });
+            })))
+        {
+            return;
+        }
 
         var query = ParquetQuery
             .FromFile<TestRow>(filePath)
@@ -1459,6 +1508,18 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         }
 
         return Task.CompletedTask;
+    }
+
+    private static async Task<bool> TryWriteEncryptedAsync(Func<Task> action)
+    {
+#if NET48
+        var exception = await Assert.ThrowsAsync<PlatformNotSupportedException>(action);
+        Assert.Contains("AES-GCM", exception.Message, StringComparison.Ordinal);
+        return false;
+#else
+        await action();
+        return true;
+#endif
     }
 
     private static Task WriteRowsAsync(
@@ -1536,7 +1597,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
 
     private static async Task SetFileMetadataAsync(string filePath, IReadOnlyDictionary<string, string> metadata)
     {
-        var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
+        var fileBytes = System.IO.File.ReadAllBytes(filePath);
 
         using var input = new MemoryStream(fileBytes, writable: false);
         using var reader = await ParquetReader.CreateAsync(input);
@@ -1552,7 +1613,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         var footerStart = fileBytes.Length - 8 - originalFooterLength;
 
         using var output = new MemoryStream();
-        await output.WriteAsync(fileBytes.AsMemory(0, footerStart));
+        await output.WriteAsync(fileBytes, 0, footerStart);
 
         var footerType = typeof(ParquetReader).Assembly.GetType("Parquet.File.ThriftFooter", throwOnError: true)
             ?? throw new InvalidOperationException("Parquet.File.ThriftFooter could not be loaded.");
@@ -1566,15 +1627,15 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             modifiers: null)
             ?? throw new InvalidOperationException("Parquet.File.ThriftFooter.Write(Stream) could not be found.");
         var newFooterLength = checked(Convert.ToInt32(writeMethod.Invoke(footer, new object[] { output })));
-        await output.WriteAsync(BitConverter.GetBytes(newFooterLength));
-        await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PAR1"));
+        await output.WriteAsync(BitConverter.GetBytes(newFooterLength), 0, sizeof(int));
+        await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PAR1"), 0, 4);
 
-        await System.IO.File.WriteAllBytesAsync(filePath, output.ToArray());
+        System.IO.File.WriteAllBytes(filePath, output.ToArray());
     }
 
     private static async Task RemovePageIndexesFromFooterAsync(string filePath)
     {
-        var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
+        var fileBytes = System.IO.File.ReadAllBytes(filePath);
 
         using var input = new MemoryStream(fileBytes, writable: false);
         using var reader = await ParquetReader.CreateAsync(input);
@@ -1595,7 +1656,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         var footerStart = fileBytes.Length - 8 - originalFooterLength;
 
         using var output = new MemoryStream();
-        await output.WriteAsync(fileBytes.AsMemory(0, footerStart));
+        await output.WriteAsync(fileBytes, 0, footerStart);
 
         var footerType = typeof(ParquetReader).Assembly.GetType("Parquet.File.ThriftFooter", throwOnError: true)
             ?? throw new InvalidOperationException("Parquet.File.ThriftFooter could not be loaded.");
@@ -1609,10 +1670,10 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             modifiers: null)
             ?? throw new InvalidOperationException("Parquet.File.ThriftFooter.Write(Stream) could not be found.");
         var newFooterLength = checked(Convert.ToInt32(writeMethod.Invoke(footer, new object[] { output })));
-        await output.WriteAsync(BitConverter.GetBytes(newFooterLength));
-        await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PAR1"));
+        await output.WriteAsync(BitConverter.GetBytes(newFooterLength), 0, sizeof(int));
+        await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes("PAR1"), 0, 4);
 
-        await System.IO.File.WriteAllBytesAsync(filePath, output.ToArray());
+        System.IO.File.WriteAllBytes(filePath, output.ToArray());
     }
 
     private sealed class FooterMetadataEqualsPredicate<T> : PushdownPredicate<T>
@@ -1673,6 +1734,6 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             ParquetPagePruningContext context,
             PushdownPredicate<T> predicate,
             CancellationToken cancellationToken = default)
-            => ValueTask.FromResult<PagePruningResult?>(null);
+            => new ValueTask<PagePruningResult?>((PagePruningResult?)null);
     }
 }
