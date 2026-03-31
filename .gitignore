@@ -8,6 +8,13 @@ BenchmarkDotNet.Artifacts/
 *.user
 *.suo
 
+# Claude Code
+.claude/
+.mcp.json
+
+# Local .NET runtime
+.dotnet-home/
+
 # React viewer app
 tools/Parquet.Query.Viewer/src/viewer-app/node_modules/
 tools/Parquet.Query.Viewer/src/Parquet.Query.Viewer/wwwroot/
