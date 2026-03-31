@@ -142,6 +142,8 @@ function mockInvoke<T>(method: string, _params?: unknown): Promise<T> {
             compression: 'SNAPPY',
             compressedSize: 65536 + rg * 1024,
             uncompressedSize: 131072 + rg * 2048,
+            hasColumnIndex: i < 4,
+            hasOffsetIndex: i < 4,
           })),
         })),
         footer: {

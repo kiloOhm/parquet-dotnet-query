@@ -37,6 +37,8 @@ export interface ColumnChunkInfo {
   compression: string | null
   compressedSize: number
   uncompressedSize: number
+  hasColumnIndex: boolean
+  hasOffsetIndex: boolean
 }
 
 export interface FileMetadataInfo {

@@ -602,7 +602,9 @@ public sealed class ParquetService : IDisposable
                     stats?.DistinctCount,
                     meta?.MetaData?.Codec.ToString(),
                     meta?.MetaData?.TotalCompressedSize ?? 0,
-                    meta?.MetaData?.TotalUncompressedSize ?? 0));
+                    meta?.MetaData?.TotalUncompressedSize ?? 0,
+                    meta?.ColumnIndexOffset is not null,
+                    meta?.OffsetIndexOffset is not null));
             }
 
             rowGroups[rg] = new RowGroupInfo(rg, _rowGroupRowCounts![rg], columnChunks.ToArray());

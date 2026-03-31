@@ -33,7 +33,9 @@ public sealed record ColumnChunkInfo(
     long? DistinctCount,
     string? Compression,
     long CompressedSize,
-    long UncompressedSize);
+    long UncompressedSize,
+    bool HasColumnIndex,
+    bool HasOffsetIndex);
 
 public sealed record FileMetadataInfo(
     ParquetFileInfo File,
