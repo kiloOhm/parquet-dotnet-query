@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { bridge } from '@/api/bridge'
 import type { FileMetadataInfo, ParquetFileInfo } from '@/api/types'
+import { useError } from '@/components/ErrorDialog'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
@@ -22,6 +23,7 @@ interface MetadataViewerProps {
 export function MetadataViewer({ fileInfo }: MetadataViewerProps) {
   const [metadata, setMetadata] = useState<FileMetadataInfo | null>(null)
   const [expandedRgs, setExpandedRgs] = useState<Set<number>>(new Set())
+  const showError = useError()
 
   const fetchMetadata = useCallback(async () => {
     if (!fileInfo) return
@@ -29,7 +31,8 @@ export function MetadataViewer({ fileInfo }: MetadataViewerProps) {
       const md = await bridge.getMetadata()
       setMetadata(md)
     } catch (err) {
-      console.error('Failed to fetch metadata:', err)
+      const msg = err instanceof Error ? err.message : String(err)
+      showError('Failed to fetch metadata', msg)
     }
   }, [fileInfo])
 

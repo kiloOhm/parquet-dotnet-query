@@ -61,6 +61,24 @@ public sealed record DataPage(
     int Limit,
     long TotalRows);
 
+public sealed record ColumnIndexInfo(
+    string ColumnPath,
+    string IndexType,
+    string Description,
+    string[] AcceleratedOperations);
+
+public sealed record BuiltinColumnInfo(
+    string ColumnPath,
+    bool HasStatistics,
+    bool HasBloomFilter,
+    bool HasPageIndex,
+    string? SortOrder);
+
+public sealed record IndicesInfo(
+    ColumnIndexInfo[] CustomIndices,
+    BuiltinColumnInfo[] BuiltinInfo,
+    string[] SortingColumns);
+
 public sealed record EncryptionConfig(
     string? FooterKey = null,
     string? FooterSigningKey = null,

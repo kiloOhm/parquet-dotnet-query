@@ -18,6 +18,7 @@ public static class MauiProgram
 
         builder.Services.AddSingleton<ParquetService>();
         builder.Services.AddSingleton<PredicateEvaluator>();
+        builder.Services.AddSingleton<EncryptionStore>();
         builder.Services.AddSingleton<WebViewBridge>();
         builder.Services.AddTransient<MainPage>();
 

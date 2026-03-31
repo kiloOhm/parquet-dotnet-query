@@ -33,6 +33,9 @@ public partial class MainPage : ContentPage
         nativeWebView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
 #if DEBUG
+        // Disable cache so React builds are never stale during development
+        nativeWebView.CoreWebView2.Settings.IsGeneralAutofillEnabled = false;
+        await nativeWebView.CoreWebView2.Profile.ClearBrowsingDataAsync();
         nativeWebView.CoreWebView2.OpenDevToolsWindow();
 #endif
 

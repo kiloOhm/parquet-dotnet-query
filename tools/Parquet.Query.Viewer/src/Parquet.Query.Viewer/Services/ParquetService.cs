@@ -19,6 +19,17 @@ public sealed class ParquetService : IDisposable
     public bool HasOpenFile => _reader is not null;
     public string? CurrentFilePath => _currentFilePath;
 
+    /// <summary>
+    /// Checks the file's magic bytes to detect encrypted footer (PARE vs PAR1).
+    /// </summary>
+    public static bool DetectEncryptedFooter(string filePath)
+    {
+        using var fs = System.IO.File.OpenRead(filePath);
+        Span<byte> magic = stackalloc byte[4];
+        return fs.Read(magic) == 4
+            && magic[0] == 'P' && magic[1] == 'A' && magic[2] == 'R' && magic[3] == 'E';
+    }
+
     public async Task<ParquetFileInfo> OpenFileAsync(string filePath, EncryptionConfig? encryption = null)
     {
         _reader?.Dispose();
@@ -43,16 +54,25 @@ public sealed class ParquetService : IDisposable
     public SchemaInfo GetSchema()
     {
         EnsureOpen();
-        var fields = _reader!.Schema.GetDataFields();
-        return new SchemaInfo(fields.Select(f => new ColumnInfo(
+        var topFields = _reader!.Schema.Fields;
+        return new SchemaInfo(topFields.Select(f => new ColumnInfo(
             f.Name,
-            f.Path.ToString(),
-            f.ClrType.Name,
-            f.ClrType.Name,
+            f.Name,
+            FieldTypeName(f),
+            FieldTypeName(f),
             f.IsNullable,
-            f.IsArray
+            f is ListField || f is MapField
         )).ToArray());
     }
+
+    private static string FieldTypeName(Field f) => f switch
+    {
+        DataField df => df.ClrType.Name,
+        MapField => "Map",
+        ListField lf => $"List<{FieldTypeName(lf.Item)}>",
+        StructField => "Struct",
+        _ => f.SchemaType.ToString()
+    };
 
     public FileMetadataInfo GetMetadata()
     {
@@ -67,9 +87,9 @@ public sealed class ParquetService : IDisposable
     public async Task<DataPage> GetDataAsync(int offset, int limit)
     {
         EnsureOpen();
-        var dataFields = _reader!.Schema.GetDataFields();
-        var columns = dataFields.Select(f => f.Name).ToArray();
-        var dataTypes = dataFields.Select(f => f.ClrType.Name).ToArray();
+        var topFields = _reader!.Schema.Fields;
+        var columns = topFields.Select(f => f.Name).ToArray();
+        var dataTypes = topFields.Select(FieldTypeName).ToArray();
         var rows = new List<object?[]>();
 
         long currentRow = 0;
@@ -84,14 +104,28 @@ public sealed class ParquetService : IDisposable
             }
 
             using var rgReader = _reader.OpenRowGroupReader(rg);
-            var columnArrays = new Dictionary<string, Array>();
-            foreach (var field in dataFields)
+
+            // Read all leaf DataColumns with their repetition/definition levels
+            var allDataFields = _reader.Schema.GetDataFields();
+            var dataColumns = new Dictionary<string, DataColumn>();
+            foreach (var df in allDataFields)
             {
-                if (rgReader.ColumnExists(field))
+                if (rgReader.ColumnExists(df))
                 {
-                    var col = await rgReader.ReadColumnAsync(field);
-                    columnArrays[field.Name] = col.Data;
+                    dataColumns[df.Path.ToString()] = await rgReader.ReadColumnAsync(df);
                 }
+            }
+
+            // Reconstruct per-row values for each top-level field
+            var fieldRows = new List<object?[]>();
+            for (int f = 0; f < topFields.Count; f++)
+            {
+                var reconstructed = ReconstructField(topFields[f], dataColumns, (int)rgRowCount);
+                // Pad fieldRows if this is the first field
+                while (fieldRows.Count < reconstructed.Count)
+                    fieldRows.Add(new object?[topFields.Count]);
+                for (int r = 0; r < reconstructed.Count; r++)
+                    fieldRows[r][f] = reconstructed[r];
             }
 
             var rgStart = (int)Math.Max(0, offset - currentRow);
@@ -99,21 +133,229 @@ public sealed class ParquetService : IDisposable
 
             for (int i = rgStart; i < rgEnd && rows.Count < limit; i++)
             {
-                var row = new object?[dataFields.Length];
-                for (int c = 0; c < dataFields.Length; c++)
-                {
-                    if (columnArrays.TryGetValue(dataFields[c].Name, out var arr) && i < arr.Length)
-                    {
-                        row[c] = FormatValue(arr.GetValue(i));
-                    }
-                }
-                rows.Add(row);
+                if (i < fieldRows.Count)
+                    rows.Add(fieldRows[i]);
             }
 
             currentRow += rgRowCount;
         }
 
         return new DataPage(columns, dataTypes, rows.ToArray(), offset, limit, _totalRowCount);
+    }
+
+    /// <summary>
+    /// Reconstructs per-row values for a top-level field from the raw DataColumns.
+    /// For primitive fields, returns the values directly.
+    /// For Map/List/Struct, groups leaf values using repetition levels.
+    /// </summary>
+    private List<object?> ReconstructField(Field field, Dictionary<string, DataColumn> dataColumns, int rowCount)
+    {
+        switch (field)
+        {
+            case DataField df:
+            {
+                var path = df.Path.ToString();
+                if (!dataColumns.TryGetValue(path, out var dc))
+                    return Enumerable.Repeat<object?>(null, rowCount).ToList();
+
+                var result = new List<object?>(rowCount);
+                for (int i = 0; i < dc.Data.Length && result.Count < rowCount; i++)
+                    result.Add(FormatValue(dc.Data.GetValue(i)));
+                // Pad if column is shorter
+                while (result.Count < rowCount) result.Add(null);
+                return result;
+            }
+
+            case MapField mf:
+            {
+                var keyLeaves = GetLeafDataFields(mf.Key);
+                var valLeaves = GetLeafDataFields(mf.Value);
+                if (keyLeaves.Count == 0)
+                    return Enumerable.Repeat<object?>(null, rowCount).ToList();
+
+                var keyPath = keyLeaves[0].Path.ToString();
+                if (!dataColumns.TryGetValue(keyPath, out var keyCol))
+                    return Enumerable.Repeat<object?>(null, rowCount).ToList();
+
+                DataColumn? valCol = null;
+                if (valLeaves.Count > 0)
+                    dataColumns.TryGetValue(valLeaves[0].Path.ToString(), out valCol);
+
+                return GroupByRepetition(
+                    keyCol,
+                    rowCount,
+                    (indices) =>
+                    {
+                        var dict = new Dictionary<string, object?>();
+                        foreach (var idx in indices)
+                        {
+                            var k = FormatValue(keyCol.Data.GetValue(idx))?.ToString() ?? "";
+                            var v = valCol != null && idx < valCol.Data.Length
+                                ? FormatValue(valCol.Data.GetValue(idx))
+                                : null;
+                            dict[k] = v;
+                        }
+                        return dict.Count > 0 ? dict : null;
+                    });
+            }
+
+            case ListField lf:
+            {
+                // Find the leaf data field(s) under this list
+                var leafFields = GetLeafDataFields(lf);
+                if (leafFields.Count == 0 || !dataColumns.TryGetValue(leafFields[0].Path.ToString(), out var listCol))
+                    return Enumerable.Repeat<object?>(null, rowCount).ToList();
+
+                if (leafFields.Count == 1 && lf.Item is DataField)
+                {
+                    // Simple list of primitives
+                    return GroupByRepetition(
+                        listCol,
+                        rowCount,
+                        (indices) =>
+                        {
+                            var items = indices
+                                .Where(i => i < listCol.Data.Length)
+                                .Select(i => FormatValue(listCol.Data.GetValue(i))).ToList();
+                            return items.Count > 0 ? items : null;
+                        });
+                }
+
+                // Complex list items (struct inside list) — fall through to flat display
+                return ReconstructFlatFallback(leafFields, dataColumns, rowCount);
+            }
+
+            case StructField sf:
+            {
+                var leafFields = GetLeafDataFields(sf);
+                if (leafFields.Count == 0)
+                    return Enumerable.Repeat<object?>(null, rowCount).ToList();
+
+                var result = new List<object?>(rowCount);
+                for (int r = 0; r < rowCount; r++)
+                {
+                    var obj = new Dictionary<string, object?>();
+                    foreach (var lf in leafFields)
+                    {
+                        if (dataColumns.TryGetValue(lf.Path.ToString(), out var dc) && r < dc.Data.Length)
+                            obj[lf.Name] = FormatValue(dc.Data.GetValue(r));
+                    }
+                    result.Add(obj.Count > 0 ? obj : null);
+                }
+                return result;
+            }
+
+            default:
+                return Enumerable.Repeat<object?>(null, rowCount).ToList();
+        }
+    }
+
+    /// <summary>
+    /// Groups a DataColumn's values into per-row collections using repetition levels.
+    /// RL=0 marks the start of a new top-level row. Definition levels determine which
+    /// RL entries actually have data (the Data array excludes nulls, so it may be shorter
+    /// than the RL array).
+    /// </summary>
+    private static List<object?> GroupByRepetition(DataColumn dc, int rowCount, Func<List<int>, object?> assembler)
+    {
+        var result = new List<object?>(rowCount);
+        var rl = dc.RepetitionLevels;
+        var dl = dc.DefinitionLevels;
+        var maxDl = dc.Field.MaxDefinitionLevel;
+
+        if (rl == null || rl.Length == 0)
+        {
+            // No repetition — one value per row
+            for (int i = 0; i < rowCount; i++)
+            {
+                var indices = i < dc.Data.Length ? new List<int> { i } : new List<int>();
+                result.Add(assembler(indices));
+            }
+            return result;
+        }
+
+        // Build a mapping from RL index -> Data index.
+        // Data array only contains values where definition level == max (i.e. non-null).
+        var rlToDataIdx = new int[rl.Length];
+        int dataIdx = 0;
+        for (int i = 0; i < rl.Length; i++)
+        {
+            if (dl != null && dl[i] < maxDl)
+            {
+                rlToDataIdx[i] = -1; // null entry, no data
+            }
+            else
+            {
+                rlToDataIdx[i] = dataIdx < dc.Data.Length ? dataIdx : -1;
+                dataIdx++;
+            }
+        }
+
+        var currentIndices = new List<int>();
+        for (int i = 0; i < rl.Length; i++)
+        {
+            if (rl[i] == 0 && currentIndices.Count > 0)
+            {
+                result.Add(assembler(currentIndices));
+                currentIndices = new List<int>();
+            }
+            var di = rlToDataIdx[i];
+            if (di >= 0)
+                currentIndices.Add(di);
+        }
+        if (currentIndices.Count > 0)
+            result.Add(assembler(currentIndices));
+
+        // Pad if fewer rows reconstructed (empty maps/lists at end)
+        while (result.Count < rowCount) result.Add(null);
+        return result;
+    }
+
+    private static List<DataField> GetLeafDataFields(Field field)
+    {
+        var result = new List<DataField>();
+        CollectLeafFields(field, result);
+        return result;
+    }
+
+    private static void CollectLeafFields(Field field, List<DataField> result)
+    {
+        switch (field)
+        {
+            case DataField df:
+                result.Add(df);
+                break;
+            case MapField mf:
+                CollectLeafFields(mf.Key, result);
+                CollectLeafFields(mf.Value, result);
+                break;
+            case ListField lf:
+                CollectLeafFields(lf.Item, result);
+                break;
+            case StructField sf:
+                foreach (var child in sf.Fields)
+                    CollectLeafFields(child, result);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Fallback for complex nested types: produce a flat string representation.
+    /// </summary>
+    private List<object?> ReconstructFlatFallback(List<DataField> leafFields, Dictionary<string, DataColumn> dataColumns, int rowCount)
+    {
+        var result = new List<object?>(rowCount);
+        for (int r = 0; r < rowCount; r++)
+        {
+            var obj = new Dictionary<string, object?>();
+            foreach (var lf in leafFields)
+            {
+                if (dataColumns.TryGetValue(lf.Path.ToString(), out var dc) && r < dc.Data.Length)
+                    obj[lf.Name] = FormatValue(dc.Data.GetValue(r));
+            }
+            result.Add(obj.Count > 0 ? obj : null);
+        }
+        return result;
     }
 
     public async Task<QueryResult> ExecuteQueryAsync(QueryRequest request)
@@ -130,7 +372,13 @@ public sealed class ParquetService : IDisposable
         {
             using var rgReader = _reader.OpenRowGroupReader(rg);
             var rowCount = _rowGroupRowCounts![rg];
-            var (shouldRead, reason) = evaluator.EvaluateRowGroup(rgReader, dataFields, request.Predicates);
+            var (shouldRead, reason) = evaluator.EvaluateRowGroup(
+                _currentFilePath!,
+                _reader.CustomMetadata,
+                rg,
+                rgReader,
+                dataFields,
+                request.Predicates);
 
             if (shouldRead) candidateRows += rowCount;
             decisions.Add(new RowGroupDecision(rg, shouldRead, reason, rowCount));
@@ -208,7 +456,13 @@ public sealed class ParquetService : IDisposable
         {
             using var rgReader = _reader.OpenRowGroupReader(rg);
             var rowCount = _rowGroupRowCounts![rg];
-            var (shouldRead, reason) = evaluator.EvaluateRowGroup(rgReader, dataFields, predicates);
+            var (shouldRead, reason) = evaluator.EvaluateRowGroup(
+                _currentFilePath!,
+                _reader.CustomMetadata,
+                rg,
+                rgReader,
+                dataFields,
+                predicates);
 
             if (shouldRead) candidateRows += rowCount;
             decisions.Add(new RowGroupDecision(rg, shouldRead, reason, rowCount));
@@ -224,6 +478,102 @@ public sealed class ParquetService : IDisposable
             candidateRows,
             -1,
             sw.Elapsed.TotalMilliseconds);
+    }
+
+    public IndicesInfo GetIndices()
+    {
+        EnsureOpen();
+
+        // --- Custom indices from footer metadata ---
+        var customIndices = new List<ColumnIndexInfo>();
+        var metadata = _reader!.CustomMetadata;
+        if (metadata is not null)
+        {
+            foreach (var kv in metadata)
+            {
+                if (kv.Key.StartsWith("parquet.query.index.bitmap.v1/"))
+                {
+                    var col = Uri.UnescapeDataString(kv.Key["parquet.query.index.bitmap.v1/".Length..]);
+                    customIndices.Add(new ColumnIndexInfo(col, "Bitmap",
+                        "Low-cardinality equality index. Stores a bitmap of which row groups contain each distinct value. Best for columns with ~256 or fewer distinct values.",
+                        ["= (equality)", "!= (inequality)"]));
+                }
+                else if (kv.Key.StartsWith("parquet.query.index.hash.v1/"))
+                {
+                    var col = Uri.UnescapeDataString(kv.Key["parquet.query.index.hash.v1/".Length..]);
+                    customIndices.Add(new ColumnIndexInfo(col, "Hash",
+                        "Hash-bucket index using FNV-1a. Maps values to hash buckets to prune row groups on equality lookups. Works for high-cardinality columns.",
+                        ["= (equality)"]));
+                }
+                else if (kv.Key.StartsWith("parquet.query.lucene.v1/"))
+                {
+                    var col = Uri.UnescapeDataString(kv.Key["parquet.query.lucene.v1/".Length..]);
+                    customIndices.Add(new ColumnIndexInfo(col, "Lucene",
+                        "Full-text search index with tokenization and optional fuzzy matching (Levenshtein distance 0-2). Prunes row groups by term presence.",
+                        ["CONTAINS (term search)", "fuzzy matching"]));
+                }
+            }
+        }
+
+        // --- Built-in optimizations per column ---
+        var dataFields = _reader.Schema.GetDataFields();
+        var builtinInfo = new List<BuiltinColumnInfo>();
+
+        // Check first row group for per-column metadata (representative)
+        if (_reader.RowGroupCount > 0)
+        {
+            using var rg = _reader.OpenRowGroupReader(0);
+            foreach (var field in dataFields)
+            {
+                if (!rg.ColumnExists(field)) continue;
+
+                var chunk = rg.GetMetadata(field);
+                var stats = rg.GetStatistics(field);
+                var hasStats = stats?.MinValue is not null || stats?.MaxValue is not null;
+                var hasBloom = chunk?.MetaData?.BloomFilterOffset is not null;
+                var hasPageIndex = chunk?.ColumnIndexOffset is not null;
+
+                builtinInfo.Add(new BuiltinColumnInfo(
+                    field.Path.ToString(),
+                    hasStats,
+                    hasBloom,
+                    hasPageIndex,
+                    SortOrder: null)); // filled below from sorting columns
+            }
+        }
+
+        // --- Sorting columns from row group metadata ---
+        var sortingCols = new List<string>();
+        if (_reader.RowGroupCount > 0)
+        {
+            var rgMeta = _reader.Metadata?.RowGroups?[0];
+            var sortingColumns = rgMeta?.SortingColumns;
+            if (sortingColumns is { Count: > 0 })
+            {
+                foreach (var sc in sortingColumns)
+                {
+                    if (sc.ColumnIdx >= 0 && sc.ColumnIdx < dataFields.Length)
+                    {
+                        var fieldName = dataFields[sc.ColumnIdx].Path.ToString();
+                        var dir = sc.Descending ? "DESC" : "ASC";
+                        var nulls = sc.NullsFirst ? ", nulls first" : "";
+                        sortingCols.Add($"{fieldName} {dir}{nulls}");
+
+                        // Update the builtin entry with sort info
+                        var existing = builtinInfo.FindIndex(b => b.ColumnPath == fieldName);
+                        if (existing >= 0)
+                        {
+                            builtinInfo[existing] = builtinInfo[existing] with { SortOrder = $"{dir}{nulls}" };
+                        }
+                    }
+                }
+            }
+        }
+
+        return new IndicesInfo(
+            customIndices.ToArray(),
+            builtinInfo.ToArray(),
+            sortingCols.ToArray());
     }
 
     private RowGroupInfo[] GetRowGroupsMetadata()
@@ -323,12 +673,12 @@ public sealed class ParquetService : IDisposable
 
         if (!string.IsNullOrEmpty(encryption.FooterKey))
         {
-            options.FooterEncryptionKey = encryption.FooterKey;
+            options.FooterEncryptionKey = NormalizeKey(encryption.FooterKey);
         }
 
         if (!string.IsNullOrEmpty(encryption.FooterSigningKey))
         {
-            options.FooterSigningKey = encryption.FooterSigningKey;
+            options.FooterSigningKey = NormalizeKey(encryption.FooterSigningKey);
         }
 
         options.UsePlaintextFooter = encryption.PlaintextFooter;
@@ -341,13 +691,57 @@ public sealed class ParquetService : IDisposable
 
         if (encryption.ColumnKeys is { Count: > 0 } columnKeys)
         {
-            foreach (var (columnPath, hexKey) in columnKeys)
+            foreach (var (columnPath, rawKey) in columnKeys)
             {
-                options.ColumnKeys[columnPath] = new ParquetOptions.ColumnKeySpec(hexKey);
+                options.ColumnKeys[columnPath] = new ParquetOptions.ColumnKeySpec(NormalizeKey(rawKey));
             }
         }
 
         return options;
+    }
+
+    /// <summary>
+    /// Normalizes a user-provided key to valid AES key material.
+    /// Valid AES keys (UTF-8, hex, or base64) pass through unchanged;
+    /// other inputs are SHA-256 hashed and returned as base64.
+    /// </summary>
+    private static string NormalizeKey(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+            return key;
+
+        if (IsValidUtf8Key(key) || IsValidHexKey(key) || IsValidBase64Key(key))
+            return key;
+
+        byte[] hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(key));
+        return Convert.ToBase64String(hash);
+    }
+
+    private static bool IsValidUtf8Key(string key)
+    {
+        int byteCount = System.Text.Encoding.UTF8.GetByteCount(key);
+        return byteCount is 16 or 24 or 32;
+    }
+
+    private static bool IsValidHexKey(string key)
+    {
+        if (key.Length is not (32 or 48 or 64))
+            return false;
+        return key.All(Uri.IsHexDigit);
+    }
+
+    private static bool IsValidBase64Key(string key)
+    {
+        try
+        {
+            byte[] bytes = Convert.FromBase64String(key);
+            return bytes.Length is 16 or 24 or 32;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
     }
 
     private static object? FormatValue(object? value)

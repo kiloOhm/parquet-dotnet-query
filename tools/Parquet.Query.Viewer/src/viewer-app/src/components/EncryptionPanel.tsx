@@ -11,6 +11,7 @@ import { Lock, Plus, Trash2, X } from 'lucide-react'
 interface EncryptionPanelProps {
   onApply: (config: EncryptionConfig | undefined) => void
   onClose: () => void
+  error?: string | null
 }
 
 interface ColumnKeyEntry {
@@ -21,7 +22,7 @@ interface ColumnKeyEntry {
 
 let nextEntryId = 1
 
-export function EncryptionPanel({ onApply, onClose }: EncryptionPanelProps) {
+export function EncryptionPanel({ onApply, onClose, error }: EncryptionPanelProps) {
   const [footerKey, setFooterKey] = useState('')
   const [footerSigningKey, setFooterSigningKey] = useState('')
   const [plaintextFooter, setPlaintextFooter] = useState(false)
@@ -194,13 +195,20 @@ export function EncryptionPanel({ onApply, onClose }: EncryptionPanelProps) {
         </div>
       </ScrollArea>
 
-      <div className="p-3 border-t flex gap-2">
-        <Button size="sm" className="flex-1" onClick={handleApply}>
-          Apply & Reopen
-        </Button>
-        <Button variant="outline" size="sm" onClick={handleClear}>
-          Clear
-        </Button>
+      <div className="p-3 border-t space-y-2">
+        {error && (
+          <p className="text-xs text-destructive bg-destructive/10 rounded px-2 py-1.5 wrap-break-word">
+            {error}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <Button size="sm" className="flex-1" onClick={handleApply}>
+            Apply & Reopen
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleClear}>
+            Clear
+          </Button>
+        </div>
       </div>
     </div>
   )

@@ -4,7 +4,10 @@ public sealed record QueryPredicate(
     string Column,
     string Operator,
     string Value,
-    string? Value2 = null);
+    string? Value2 = null,
+    int? MaxEdits = null,
+    int? PrefixLength = null,
+    bool? Transpositions = null);
 
 public sealed record QueryRequest(
     QueryPredicate[] Predicates,

@@ -1,9 +1,11 @@
 import { useCallback, useState } from 'react'
 import { bridge } from '@/api/bridge'
 import type { EncryptionConfig, ParquetFileInfo } from '@/api/types'
+import { useError } from '@/components/ErrorDialog'
 import { DataTable } from '@/components/DataTable'
 import { MetadataViewer } from '@/components/MetadataViewer'
 import { QueryEditor } from '@/components/QueryEditor'
+import { IndicesViewer } from '@/components/IndicesViewer'
 import { EncryptionPanel } from '@/components/EncryptionPanel'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
@@ -12,6 +14,7 @@ import { Separator } from '@/components/ui/separator'
 import { formatBytes, formatNumber } from '@/lib/utils'
 import {
   FolderOpen,
+  Hash,
   Lock,
   Table2,
   FileText,
@@ -23,31 +26,67 @@ export default function App() {
   const [encryptionConfig, setEncryptionConfig] = useState<EncryptionConfig | undefined>()
   const [showEncryption, setShowEncryption] = useState(false)
   const [activeTab, setActiveTab] = useState('data')
+  const showError = useError()
+  const [pendingEncryptedPath, setPendingEncryptedPath] = useState<string | null>(null)
+  const [openError, setOpenError] = useState<string | null>(null)
 
   const handlePickFile = useCallback(async () => {
     try {
+      setOpenError(null)
       const result = await bridge.pickFile()
-      if (!result.cancelled && result.file) {
+      if (result.cancelled) return
+
+      if (result.needsEncryption && result.path) {
+        // Encrypted footer detected — prompt for keys before opening
+        setPendingEncryptedPath(result.path)
+        setShowEncryption(true)
+        setFileInfo(null)
+        setEncryptionConfig(undefined)
+        return
+      }
+
+      if (result.error && result.path) {
+        // Open failed (e.g. plaintext-footer encryption) — show error and prompt for keys
+        setPendingEncryptedPath(result.path)
+        setOpenError(result.error)
+        setShowEncryption(true)
+        setFileInfo(null)
+        setEncryptionConfig(undefined)
+        return
+      }
+
+      if (result.file) {
+        setPendingEncryptedPath(null)
         setFileInfo(result.file)
       }
     } catch (err) {
-      console.error('Failed to pick file:', err)
+      const msg = err instanceof Error ? err.message : String(err)
+      setOpenError(msg)
+      showError('Failed to pick file', msg)
     }
   }, [])
 
   const handleEncryptionApply = useCallback(async (config: EncryptionConfig | undefined) => {
     setEncryptionConfig(config)
-    setShowEncryption(false)
+    setOpenError(null)
 
-    if (fileInfo) {
-      try {
-        const updated = await bridge.openFile(fileInfo.path, config)
-        setFileInfo(updated)
-      } catch (err) {
-        console.error('Failed to reopen file with encryption:', err)
-      }
+    const pathToOpen = pendingEncryptedPath ?? fileInfo?.path
+    if (!pathToOpen) {
+      setShowEncryption(false)
+      return
     }
-  }, [fileInfo])
+
+    try {
+      const updated = await bridge.openFile(pathToOpen, config)
+      setFileInfo(updated)
+      setPendingEncryptedPath(null)
+      setShowEncryption(false)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setOpenError(msg)
+      showError('Failed to open file with encryption', msg)
+    }
+  }, [fileInfo, pendingEncryptedPath])
 
   const fileName = fileInfo?.path.split(/[\\/]/).pop() ?? null
 
@@ -59,21 +98,33 @@ export default function App() {
           <FolderOpen className="h-4 w-4 mr-1.5" />
           Open File
         </Button>
-        <Button
-          variant={encryptionConfig ? 'default' : 'outline'}
-          size="sm"
-          onClick={() => setShowEncryption(!showEncryption)}
-        >
-          <Lock className="h-4 w-4 mr-1.5" />
-          Encryption
-          {encryptionConfig && (
-            <Badge variant="secondary" className="ml-1.5 text-[10px] px-1 py-0">ON</Badge>
-          )}
-        </Button>
+        {(pendingEncryptedPath || fileInfo?.isEncrypted) && (
+          <Button
+            variant={encryptionConfig ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setShowEncryption(!showEncryption)}
+          >
+            <Lock className="h-4 w-4 mr-1.5" />
+            Encryption
+            {encryptionConfig && (
+              <Badge variant="secondary" className="ml-1.5 text-[10px] px-1 py-0">ON</Badge>
+            )}
+          </Button>
+        )}
 
         <Separator orientation="vertical" className="h-6" />
 
-        {fileInfo ? (
+        {pendingEncryptedPath && !fileInfo ? (
+          <div className="flex items-center gap-2 text-sm">
+            <Badge variant="destructive" className="text-[10px] shrink-0">
+              <Lock className="h-3 w-3 mr-0.5" /> Encrypted
+            </Badge>
+            <span className="text-muted-foreground truncate max-w-[300px]" title={pendingEncryptedPath}>
+              {pendingEncryptedPath.split(/[\\/]/).pop()}
+            </span>
+            <span className="text-muted-foreground text-xs">— provide decryption keys to open</span>
+          </div>
+        ) : fileInfo ? (
           <div className="flex items-center gap-3 text-sm overflow-hidden">
             <span className="font-medium truncate max-w-[300px]" title={fileInfo.path}>
               {fileName}
@@ -106,6 +157,7 @@ export default function App() {
             <EncryptionPanel
               onApply={(c) => void handleEncryptionApply(c)}
               onClose={() => setShowEncryption(false)}
+              error={openError}
             />
           </div>
         )}
@@ -114,10 +166,10 @@ export default function App() {
         <Tabs
           value={activeTab}
           onValueChange={setActiveTab}
-          className="flex-1 flex flex-col overflow-hidden"
+          className="flex-1 gap-0 overflow-hidden"
         >
           <div className="border-b px-4">
-            <TabsList className="h-9">
+            <TabsList variant="line" className="h-9">
               <TabsTrigger value="data" className="text-xs gap-1.5">
                 <Table2 className="h-3.5 w-3.5" /> Data
               </TabsTrigger>
@@ -127,19 +179,26 @@ export default function App() {
               <TabsTrigger value="query" className="text-xs gap-1.5">
                 <Search className="h-3.5 w-3.5" /> Query
               </TabsTrigger>
+              <TabsTrigger value="indices" className="text-xs gap-1.5">
+                <Hash className="h-3.5 w-3.5" /> Indices
+              </TabsTrigger>
             </TabsList>
           </div>
 
-          <TabsContent value="data" className="flex-1 overflow-hidden mt-0">
+          <TabsContent value="data" className="flex-1 overflow-hidden">
             <DataTable fileInfo={fileInfo} />
           </TabsContent>
 
-          <TabsContent value="metadata" className="flex-1 overflow-hidden mt-0">
+          <TabsContent value="metadata" className="flex-1 overflow-hidden">
             <MetadataViewer fileInfo={fileInfo} />
           </TabsContent>
 
-          <TabsContent value="query" className="flex-1 overflow-hidden mt-0">
+          <TabsContent value="query" className="flex-1 overflow-hidden">
             <QueryEditor fileInfo={fileInfo} />
+          </TabsContent>
+
+          <TabsContent value="indices" className="flex-1 overflow-hidden">
+            <IndicesViewer fileInfo={fileInfo} />
           </TabsContent>
         </Tabs>
       </div>

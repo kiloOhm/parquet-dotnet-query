@@ -14,10 +14,12 @@ public sealed class WebViewBridge
     };
 
     private readonly ParquetService _parquetService;
+    private readonly EncryptionStore _encryptionStore;
 
-    public WebViewBridge(ParquetService parquetService)
+    public WebViewBridge(ParquetService parquetService, EncryptionStore encryptionStore)
     {
         _parquetService = parquetService;
+        _encryptionStore = encryptionStore;
     }
 
     public async Task<string> HandleMessageAsync(string messageJson)
@@ -26,6 +28,7 @@ public sealed class WebViewBridge
         try
         {
             var json = messageJson;
+            System.Diagnostics.Debug.WriteLine($"[Bridge] Raw message: {json}");
 
             if (json.StartsWith('"') && json.EndsWith('"'))
             {
@@ -36,11 +39,15 @@ public sealed class WebViewBridge
             if (request is null)
                 return SerializeError("null", "Invalid request format.");
 
+            System.Diagnostics.Debug.WriteLine($"[Bridge] Dispatching: {request.Method} (id={request.Id})");
             var result = await DispatchAsync(request);
-            return SerializeResponse(request.Id, result);
+            var response = SerializeResponse(request.Id, result);
+            System.Diagnostics.Debug.WriteLine($"[Bridge] Response: {response}");
+            return response;
         }
         catch (Exception ex)
         {
+            System.Diagnostics.Debug.WriteLine($"[Bridge] ERROR in {request?.Method ?? "?"}: {ex}");
             return SerializeError(request?.Id ?? "unknown", ex.Message);
         }
     }
@@ -53,6 +60,7 @@ public sealed class WebViewBridge
             "openFile" => await HandleOpenFileAsync(request.Params),
             "getSchema" => HandleGetSchema(),
             "getMetadata" => HandleGetMetadata(),
+            "getIndices" => HandleGetIndices(),
             "getData" => await HandleGetDataAsync(request.Params),
             "executeQuery" => await HandleExecuteQueryAsync(request.Params),
             "getQueryPlan" => HandleGetQueryPlan(request.Params),
@@ -62,7 +70,7 @@ public sealed class WebViewBridge
 
     private async Task<object?> HandlePickFileAsync()
     {
-        var result = await MainThread.InvokeOnMainThreadAsync(async () =>
+        var filePath = await MainThread.InvokeOnMainThreadAsync(async () =>
         {
             var pickResult = await FilePicker.Default.PickAsync(new PickOptions
             {
@@ -75,10 +83,48 @@ public sealed class WebViewBridge
             return pickResult?.FullPath;
         });
 
-        if (result is null) return new { cancelled = true };
+        if (filePath is null) return new { cancelled = true };
 
-        var fileInfo = await _parquetService.OpenFileAsync(result);
-        return new { cancelled = false, file = fileInfo };
+        System.Diagnostics.Debug.WriteLine($"[Bridge] pickFile: {filePath}");
+
+        // Check if we have saved encryption for this file
+        var savedEncryption = _encryptionStore.Get(filePath);
+        var isEncrypted = ParquetService.DetectEncryptedFooter(filePath);
+        System.Diagnostics.Debug.WriteLine($"[Bridge] PARE detected: {isEncrypted}, saved encryption: {savedEncryption is not null}");
+
+        // If encrypted and we have saved keys, try to open automatically
+        if (savedEncryption is not null)
+        {
+            try
+            {
+                var fileInfo = await _parquetService.OpenFileAsync(filePath, savedEncryption);
+                return new { cancelled = false, file = fileInfo };
+            }
+            catch (Exception ex)
+            {
+                // Saved keys didn't work — fall through to prompt
+                System.Diagnostics.Debug.WriteLine($"[Bridge] Saved encryption failed: {ex.Message}");
+                _encryptionStore.Set(filePath, null);
+            }
+        }
+
+        if (isEncrypted)
+        {
+            return new { cancelled = false, path = filePath, needsEncryption = true };
+        }
+
+        // Try to open the file; if it fails (e.g. plaintext-footer encryption),
+        // return the path and error so the UI can prompt for keys.
+        try
+        {
+            var fileInfo = await _parquetService.OpenFileAsync(filePath);
+            return new { cancelled = false, file = fileInfo };
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Bridge] Open failed: {ex.Message}");
+            return new { cancelled = false, path = filePath, error = ex.Message };
+        }
     }
 
     private async Task<object?> HandleOpenFileAsync(JsonElement? param)
@@ -92,7 +138,12 @@ public sealed class WebViewBridge
             encryption = JsonSerializer.Deserialize<EncryptionConfig>(encEl.GetRawText(), s_jsonOptions);
         }
 
-        return await _parquetService.OpenFileAsync(path, encryption);
+        var result = await _parquetService.OpenFileAsync(path, encryption);
+
+        // Save encryption config on successful open so we remember it next time
+        _encryptionStore.Set(path, encryption);
+
+        return result;
     }
 
     private object? HandleGetSchema()
@@ -103,6 +154,11 @@ public sealed class WebViewBridge
     private object? HandleGetMetadata()
     {
         return _parquetService.GetMetadata();
+    }
+
+    private object? HandleGetIndices()
+    {
+        return _parquetService.GetIndices();
     }
 
     private async Task<object?> HandleGetDataAsync(JsonElement? param)

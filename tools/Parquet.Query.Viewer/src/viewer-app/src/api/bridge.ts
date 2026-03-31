@@ -2,6 +2,7 @@ import type {
   DataPage,
   EncryptionConfig,
   FileMetadataInfo,
+  IndicesInfo,
   ParquetFileInfo,
   PickFileResult,
   QueryPlan,
@@ -33,9 +34,12 @@ function getWebView() {
 
 if (isWebView()) {
   const wv = getWebView()
-  wv.addEventListener('message', (e: { data: string }) => {
+  wv.addEventListener('message', (e: { data: unknown }) => {
     try {
-      const msg = JSON.parse(e.data) as { id: string; result?: unknown; error?: string }
+      // PostWebMessageAsJson delivers e.data as an already-parsed JS object
+      const msg = (typeof e.data === 'string' ? JSON.parse(e.data) : e.data) as {
+        id: string; result?: unknown; error?: string
+      }
       const req = pending.get(msg.id)
       if (!req) return
       pending.delete(msg.id)
@@ -44,8 +48,8 @@ if (isWebView()) {
       } else {
         req.resolve(msg.result)
       }
-    } catch {
-      // ignore malformed messages
+    } catch (err) {
+      console.error('[bridge] Failed to handle message:', err, e.data)
     }
   })
 }
@@ -225,6 +229,32 @@ function mockInvoke<T>(method: string, _params?: unknown): Promise<T> {
       } as T)
     }
 
+    case 'getIndices':
+      return Promise.resolve({
+        customIndices: [
+          {
+            columnPath: 'city',
+            indexType: 'Bitmap',
+            description: 'Low-cardinality equality index. Stores a bitmap of which row groups contain each distinct value.',
+            acceleratedOperations: ['= (equality)', '!= (inequality)'],
+          },
+          {
+            columnPath: 'id',
+            indexType: 'Hash',
+            description: 'Hash-bucket index using FNV-1a. Maps values to hash buckets to prune row groups on equality lookups.',
+            acceleratedOperations: ['= (equality)'],
+          },
+        ],
+        builtinInfo: mockColumns.map((name, i) => ({
+          columnPath: name,
+          hasStatistics: i < 5,
+          hasBloomFilter: i === 0 || i === 3,
+          hasPageIndex: i < 3,
+          sortOrder: i === 0 ? 'ASC' : null,
+        })),
+        sortingColumns: ['id ASC'],
+      } as T)
+
     default:
       return Promise.reject(new Error(`Mock: unknown method '${method}'`))
   }
@@ -236,6 +266,7 @@ export const bridge = {
     invoke<ParquetFileInfo>('openFile', { path, encryption }),
   getSchema: () => invoke<{ columns: unknown[] }>('getSchema'),
   getMetadata: () => invoke<FileMetadataInfo>('getMetadata'),
+  getIndices: () => invoke<IndicesInfo>('getIndices'),
   getData: (offset = 0, limit = 500) => invoke<DataPage>('getData', { offset, limit }),
   executeQuery: (predicates: QueryPredicate[], offset = 0, limit = 200) =>
     invoke<QueryResult>('executeQuery', { predicates, offset, limit }),

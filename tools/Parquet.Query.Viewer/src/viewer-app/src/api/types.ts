@@ -69,6 +69,27 @@ export interface DataPage {
   totalRows: number
 }
 
+export interface ColumnIndexInfo {
+  columnPath: string
+  indexType: string
+  description: string
+  acceleratedOperations: string[]
+}
+
+export interface BuiltinColumnInfo {
+  columnPath: string
+  hasStatistics: boolean
+  hasBloomFilter: boolean
+  hasPageIndex: boolean
+  sortOrder: string | null
+}
+
+export interface IndicesInfo {
+  customIndices: ColumnIndexInfo[]
+  builtinInfo: BuiltinColumnInfo[]
+  sortingColumns: string[]
+}
+
 export interface EncryptionConfig {
   footerKey?: string
   footerSigningKey?: string
@@ -83,6 +104,9 @@ export interface QueryPredicate {
   operator: string
   value: string
   value2?: string
+  maxEdits?: number
+  prefixLength?: number
+  transpositions?: boolean
 }
 
 export interface QueryRequest {
@@ -117,4 +141,7 @@ export interface QueryResult {
 export interface PickFileResult {
   cancelled: boolean
   file?: ParquetFileInfo
+  path?: string
+  needsEncryption?: boolean
+  error?: string
 }
