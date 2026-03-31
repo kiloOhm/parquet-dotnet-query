@@ -11,6 +11,9 @@ internal static class FooterIndexStorage
     public static string GetBitmapMetadataKey(string columnPath) =>
         FooterIndexNames.BitmapMetadataPrefix + Uri.EscapeDataString(columnPath);
 
+    public static string GetSortOrderMetadataKey() =>
+        FooterIndexNames.SortOrderMetadataKey;
+
     public static string Serialize<TModel>(TModel index)
         => ParquetFooterMetadata.Serialize(index);
 

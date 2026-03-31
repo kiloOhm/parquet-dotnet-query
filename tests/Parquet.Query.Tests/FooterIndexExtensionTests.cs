@@ -3,6 +3,7 @@ using Parquet.Query.Extensions.Indexing;
 using Parquet.Query.Internal;
 using Parquet.Query.Extensions.Writing;
 using Parquet.Query.Extensions.Writing.Attributes;
+using Parquet.Query.Extensions.Writing.Indexing;
 using Parquet.Serialization;
 
 namespace Parquet.Query.Tests;
@@ -294,6 +295,42 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task WriteAsync_builds_footer_sort_order_metadata()
+    {
+        var filePath = Path.Combine(_tempDirectory, "footer-sort-order.parquet");
+
+        await ParquetFileWriter.WriteAsync(
+            new[]
+            {
+                new FooterSortOrderRow { Id = "1", CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc), Amount = 10m },
+                new FooterSortOrderRow { Id = "2", CreatedAt = new DateTime(2024, 1, 2, 0, 0, 0, DateTimeKind.Utc), Amount = 20m }
+            },
+            filePath,
+            indexingStrategies: new IParquetIndexingStrategy[] { new FooterSortOrderIndexingStrategy() });
+
+        using var stream = System.IO.File.OpenRead(filePath);
+        using var reader = await Parquet.ParquetReader.CreateAsync(stream);
+        var sortOrderPayload = reader.CustomMetadata
+            .FirstOrDefault(entry => string.Equals(entry.Key, "parquet.query.index.sortorder.v1", StringComparison.Ordinal))
+            .Value;
+
+        Assert.NotNull(sortOrderPayload);
+
+        var model = ParquetFooterMetadata.TryDeserialize<FooterSortOrderTestModel>(sortOrderPayload);
+
+        Assert.NotNull(model);
+        Assert.Equal(2, model!.Columns.Count);
+
+        Assert.Equal("CreatedAt", model.Columns[0].ColumnPath);
+        Assert.Equal(1, model.Columns[0].Order);
+        Assert.Equal("descending", model.Columns[0].Direction);
+
+        Assert.Equal("Amount", model.Columns[1].ColumnPath);
+        Assert.Equal(2, model.Columns[1].Order);
+        Assert.Equal("ascending", model.Columns[1].Direction);
+    }
+
+    [Fact]
     public async Task WithFooterIndexes_without_footer_metadata_falls_back_to_standard_pruning()
     {
         var filePath = Path.Combine(_tempDirectory, "footer-none.parquet");
@@ -568,5 +605,28 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
     {
         [ParquetFooterBitmapIndex]
         public string Code { get; set; } = string.Empty;
+    }
+
+    private sealed class FooterSortOrderRow
+    {
+        public string Id { get; set; } = string.Empty;
+
+        [ParquetSortKey(priority: 1, Direction = ParquetSortDirection.Descending)]
+        public DateTime CreatedAt { get; set; }
+
+        [ParquetSortKey(priority: 2)]
+        public decimal Amount { get; set; }
+    }
+
+    private sealed class FooterSortOrderTestModel
+    {
+        public List<FooterSortOrderTestColumnModel> Columns { get; set; } = [];
+    }
+
+    private sealed class FooterSortOrderTestColumnModel
+    {
+        public string ColumnPath { get; set; } = string.Empty;
+        public int Order { get; set; }
+        public string Direction { get; set; } = string.Empty;
     }
 }
