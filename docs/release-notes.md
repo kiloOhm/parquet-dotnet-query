@@ -1,7 +1,22 @@
 # 0.1.0-preview.5
 
-- Fix footer-backed hash, bitmap, and Lucene index builders to reopen parquet files with the original parquet encryption options, so footer-encrypted files can build and query footer metadata indexes again.
-- Preserve encrypted and signed footer formats when query-extension metadata rewrites update parquet footer metadata, instead of downgrading encrypted footer files during index persistence.
+### Parquet Viewer (new)
+
+- Add `Parquet.Query.Viewer`, a MAUI + WebView2 desktop app for inspecting Parquet files with a React frontend.
+- Predicate-based query execution with row group pruning using column statistics and Lucene footer indexes, including fuzzy matching with configurable Levenshtein/Damerau-Levenshtein distance.
+- Indices viewer showing custom footer indexes (hash, bitmap, sort order) and built-in column optimizations (statistics, bloom filters, page indexes, sort order).
+- Reusable virtualized data grid with resizable columns and complex nested value inspection.
+- Encryption key management with per-file persistence across sessions.
+- Query editor with predicate builder, row group plan visualization, and C# code generation from predicates.
+- Migrate viewer frontend from Tailwind CSS v3 to v4 and from Radix UI to Base UI.
+
+### Indexing Extensions
+
+- Add footer sort order index type (`FooterSortOrderIndexingStrategy`) that writes column sort order metadata to the parquet footer, enabling downstream readers to detect physical sort order without scanning data.
+- Add dedicated attribute constants and shared name/serialization helpers for built-in footer index types (hash, bitmap, sort order).
+- Expand footer hash index to support additional column types.
+- Fix footer-backed hash, bitmap, and Lucene index builders to reopen parquet files with the original encryption options, so footer-encrypted files can build and query footer metadata indexes again.
+- Preserve encrypted and signed footer formats when metadata rewrites update parquet footer, instead of downgrading encrypted footer files during index persistence.
 
 # 0.1.0-preview.4
 
