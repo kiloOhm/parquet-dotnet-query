@@ -13,41 +13,6 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
     private readonly string _tempDirectory = Path.Combine(Path.GetTempPath(), "Parquet.Query.FooterIndex.Tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
-    public async Task WriteAsync_builds_footer_hash_index_and_equality_query_prunes_row_groups()
-    {
-        var filePath = Path.Combine(_tempDirectory, "footer-hash.parquet");
-
-        await ParquetFileWriter.WriteAsync(
-            new[]
-            {
-                new FooterHashRow { Id = "key-100", Group = "north" },
-                new FooterHashRow { Id = "key-300", Group = "west" },
-                new FooterHashRow { Id = "key-200", Group = "south" },
-                new FooterHashRow { Id = "key-400", Group = "east" }
-            },
-            filePath,
-            indexingStrategies: new[] { new FooterHashIndexingStrategy(bucketCount: 65536) },
-            serializerOptions: new ParquetSerializerOptions
-            {
-                RowGroupSize = 2
-            });
-
-        var query = ParquetQuery
-            .FromFile<FooterHashRow>(filePath)
-            .WithFooterIndexes()
-            .Pushdown(filter => filter.Eq(row => row.Id, "key-200"));
-
-        var plan = await query.PlanAsync();
-        var rows = await query.ToListAsync();
-
-        Assert.Equal(new[] { "key-200" }, rows.Select(row => row.Id).ToArray());
-        Assert.Equal(2, plan.RowGroups.Count);
-        Assert.False(plan.RowGroups[0].ShouldRead);
-        Assert.True(plan.RowGroups[1].ShouldRead);
-        Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source.Contains("footer-hash", StringComparison.Ordinal));
-    }
-
-    [Fact]
     public async Task WriteAsync_builds_footer_bitmap_index_and_equality_query_prunes_row_groups()
     {
         var filePath = Path.Combine(_tempDirectory, "footer-bitmap.parquet");
@@ -80,50 +45,6 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
         Assert.False(plan.RowGroups[0].ShouldRead);
         Assert.True(plan.RowGroups[1].ShouldRead);
         Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source.Contains("footer-bitmap", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task WriteAsync_builds_footer_hash_index_for_footer_encrypted_files()
-    {
-        var filePath = Path.Combine(_tempDirectory, "footer-hash-encrypted.parquet");
-        const string footerKey = "0123456789ABCDEF";
-
-        if (!await TryWriteEncryptedAsync(() => ParquetFileWriter.WriteAsync(
-            new[]
-            {
-                new FooterHashRow { Id = "key-100", Group = "north" },
-                new FooterHashRow { Id = "key-300", Group = "west" },
-                new FooterHashRow { Id = "key-200", Group = "south" },
-                new FooterHashRow { Id = "key-400", Group = "east" }
-            },
-            filePath,
-            indexingStrategies: new[] { new FooterHashIndexingStrategy(bucketCount: 65536) },
-            serializerOptions: new ParquetSerializerOptions
-            {
-                RowGroupSize = 2,
-                ParquetOptions = new ParquetOptions
-                {
-                    FooterEncryptionKey = footerKey
-                }
-            })))
-        {
-            return;
-        }
-
-        var query = ParquetQuery
-            .FromFile<FooterHashRow>(filePath)
-            .WithFooterKey(footerKey)
-            .WithFooterIndexes()
-            .Pushdown(filter => filter.Eq(row => row.Id, "key-200"));
-
-        var plan = await query.PlanAsync();
-        var rows = await query.ToListAsync();
-
-        Assert.Equal(new[] { "key-200" }, rows.Select(row => row.Id).ToArray());
-        Assert.Equal(2, plan.RowGroups.Count);
-        Assert.False(plan.RowGroups[0].ShouldRead);
-        Assert.True(plan.RowGroups[1].ShouldRead);
-        Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source.Contains("footer-hash", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -168,80 +89,6 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
         Assert.False(plan.RowGroups[0].ShouldRead);
         Assert.True(plan.RowGroups[1].ShouldRead);
         Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source.Contains("footer-bitmap", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task WriteAsync_builds_footer_hash_index_for_column_encrypted_files()
-    {
-        var filePath = Path.Combine(_tempDirectory, "footer-hash-column-encrypted.parquet");
-        const string footerKey = "FEDCBA9876543210";
-        const string columnKey = "0011223344556677";
-        var keyMetadata = System.Text.Encoding.UTF8.GetBytes("footer-hash-id-key");
-
-        if (!await TryWriteEncryptedAsync(() => ParquetFileWriter.WriteAsync(
-            new[]
-            {
-                new FooterHashRow { Id = "key-100", Group = "north" },
-                new FooterHashRow { Id = "key-300", Group = "west" },
-                new FooterHashRow { Id = "key-200", Group = "south" },
-                new FooterHashRow { Id = "key-400", Group = "east" }
-            },
-            filePath,
-            indexingStrategies: new[] { new FooterHashIndexingStrategy(bucketCount: 65536) },
-            serializerOptions: new ParquetSerializerOptions
-            {
-                RowGroupSize = 2,
-                ParquetOptions = new ParquetOptions
-                {
-                    FooterEncryptionKey = footerKey,
-                    ColumnKeyResolver = (path, metadata) =>
-                    {
-                        if (path.Count > 0 &&
-                            string.Equals(path[path.Count - 1], "Id", StringComparison.Ordinal) &&
-                            metadata is not null &&
-                            metadata.SequenceEqual(keyMetadata))
-                        {
-                            return columnKey;
-                        }
-
-                        return null;
-                    },
-                    ColumnKeys =
-                    {
-                        ["Id"] = new ParquetOptions.ColumnKeySpec(columnKey, keyMetadata)
-                    }
-                }
-            })))
-        {
-            return;
-        }
-
-        var query = ParquetQuery
-            .FromFile<FooterHashRow>(filePath)
-            .WithFooterKey(footerKey)
-            .WithColumnKeyResolver((path, metadata) =>
-            {
-                if (path.Count > 0 &&
-                    string.Equals(path[path.Count - 1], "Id", StringComparison.Ordinal) &&
-                    metadata is not null &&
-                    metadata.SequenceEqual(keyMetadata))
-                {
-                    return columnKey;
-                }
-
-                return null;
-            })
-            .WithFooterIndexes()
-            .Pushdown(filter => filter.Eq(row => row.Id, "key-200"));
-
-        var plan = await query.PlanAsync();
-        var rows = await query.ToListAsync();
-
-        Assert.Equal(new[] { "key-200" }, rows.Select(row => row.Id).ToArray());
-        Assert.Equal(2, plan.RowGroups.Count);
-        Assert.False(plan.RowGroups[0].ShouldRead);
-        Assert.True(plan.RowGroups[1].ShouldRead);
-        Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source.Contains("footer-hash", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -403,41 +250,6 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task FooterHashIndexingStrategy_supports_numeric_columns()
-    {
-        var filePath = Path.Combine(_tempDirectory, "footer-hash-numeric.parquet");
-
-        await ParquetFileWriter.WriteAsync(
-            new[]
-            {
-                new NumericHashRow { Id = 100, Group = "north" },
-                new NumericHashRow { Id = 300, Group = "west" },
-                new NumericHashRow { Id = 200, Group = "south" },
-                new NumericHashRow { Id = 400, Group = "east" }
-            },
-            filePath,
-            indexingStrategies: new[] { new FooterHashIndexingStrategy(bucketCount: 65536) },
-            serializerOptions: new ParquetSerializerOptions
-            {
-                RowGroupSize = 2
-            });
-
-        var query = ParquetQuery
-            .FromFile<NumericHashRow>(filePath)
-            .WithFooterIndexes()
-            .Pushdown(filter => filter.Eq(row => row.Id, 200));
-
-        var plan = await query.PlanAsync();
-        var rows = await query.ToListAsync();
-
-        Assert.Equal(new[] { 200 }, rows.Select(row => row.Id).ToArray());
-        Assert.Equal(2, plan.RowGroups.Count);
-        Assert.False(plan.RowGroups[0].ShouldRead);
-        Assert.True(plan.RowGroups[1].ShouldRead);
-        Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source.Contains("footer-hash", StringComparison.Ordinal));
-    }
-
-    [Fact]
     public async Task FooterBitmapIndexingStrategy_rejects_high_cardinality_columns()
     {
         var filePath = Path.Combine(_tempDirectory, "footer-bitmap-invalid.parquet");
@@ -454,31 +266,6 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
                 indexingStrategies: new[] { new FooterBitmapIndexingStrategy(maxDistinctValues: 2) }));
 
         Assert.Contains("low-cardinality columns", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task FooterHashIndexingStrategy_warns_when_bitmap_would_be_more_precise()
-    {
-        var filePath = Path.Combine(_tempDirectory, "footer-hash-warning.parquet");
-
-        var warning = CaptureConsoleError(() => ParquetFileWriter.WriteAsync(
-            new[]
-            {
-                new FooterHashRow { Id = "A", Group = "north" },
-                new FooterHashRow { Id = "B", Group = "west" },
-                new FooterHashRow { Id = "A", Group = "south" },
-                new FooterHashRow { Id = "B", Group = "east" }
-            },
-            filePath,
-            indexingStrategies: new[] { new FooterHashIndexingStrategy(bucketCount: 1024) },
-            serializerOptions: new ParquetSerializerOptions
-            {
-                RowGroupSize = 2
-            }));
-
-        Assert.Contains("footer-hash", warning, StringComparison.Ordinal);
-        Assert.Contains("footer-bitmap", warning, StringComparison.Ordinal);
-        Assert.Contains("lucene", warning, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -501,7 +288,6 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
 
         Assert.Contains("low-cardinality columns", exception.Message, StringComparison.Ordinal);
         Assert.Contains("footer-bitmap", warning, StringComparison.Ordinal);
-        Assert.Contains("footer-hash", warning, StringComparison.Ordinal);
         Assert.Contains("lucene", warning, StringComparison.Ordinal);
     }
 
@@ -568,22 +354,6 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
             onCompleted(writer.ToString());
             writer.Dispose();
         }
-    }
-
-    private sealed class FooterHashRow
-    {
-        [ParquetFooterHashIndex]
-        public string Id { get; set; } = string.Empty;
-
-        public string Group { get; set; } = string.Empty;
-    }
-
-    private sealed class NumericHashRow
-    {
-        [ParquetFooterHashIndex]
-        public int Id { get; set; }
-
-        public string Group { get; set; } = string.Empty;
     }
 
     private sealed class FooterBitmapRow

@@ -32,19 +32,6 @@ public sealed class IndexingInternalCoverageTests
         Assert.Equal((false, string.Empty), InvokeTryFormat(new object()));
     }
 
-    [Fact]
-    public void FooterIndexValueFormatter_buckets_values_deterministically()
-    {
-        var first = InvokeGetBucket("alpha", 17);
-        var second = InvokeGetBucket("alpha", 17);
-
-        Assert.InRange(first, 0, 16);
-        Assert.Equal(first, second);
-
-        var exception = Assert.Throws<TargetInvocationException>(() => InvokeGetBucket("alpha", 0));
-        Assert.IsType<ArgumentOutOfRangeException>(exception.InnerException);
-    }
-
     private static Type FormatterType =>
         typeof(FooterIndexQueryExtensions).Assembly.GetType("Parquet.Query.Extensions.Indexing.FooterIndexValueFormatter", throwOnError: true)
         ?? throw new InvalidOperationException("FooterIndexValueFormatter type not found.");
@@ -65,10 +52,4 @@ public sealed class IndexingInternalCoverageTests
         return (success, (string)(arguments[1] ?? string.Empty));
     }
 
-    private static int InvokeGetBucket(string value, int bucketCount)
-    {
-        var method = FormatterType.GetMethod("GetBucket", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("GetBucket not found.");
-        return (int)method.Invoke(null, new object[] { value, bucketCount })!;
-    }
 }

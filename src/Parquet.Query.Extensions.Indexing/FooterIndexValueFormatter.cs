@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 
 namespace Parquet.Query.Extensions.Indexing;
 
@@ -77,25 +76,4 @@ internal static class FooterIndexValueFormatter
         return false;
     }
 
-    public static int GetBucket(string value, int bucketCount)
-    {
-        if (bucketCount <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bucketCount));
-        }
-
-        const ulong offsetBasis = 14695981039346656037;
-        const ulong prime = 1099511628211;
-
-        var buffer = Encoding.UTF8.GetBytes(value);
-
-        ulong hash = offsetBasis;
-        foreach (var current in buffer)
-        {
-            hash ^= current;
-            hash *= prime;
-        }
-
-        return (int)(hash % (uint)bucketCount);
-    }
 }

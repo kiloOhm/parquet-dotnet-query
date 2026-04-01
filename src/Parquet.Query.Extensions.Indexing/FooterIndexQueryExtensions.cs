@@ -8,7 +8,7 @@ namespace Parquet.Query.Extensions.Indexing;
 public static class FooterIndexQueryExtensions
 {
     /// <summary>
-    /// Enables footer bitmap and hash indexes for query planning.
+    /// Enables footer bitmap indexes for query planning.
     /// </summary>
     /// <typeparam name="TSource">The source row type.</typeparam>
     /// <typeparam name="TResult">The query result type.</typeparam>

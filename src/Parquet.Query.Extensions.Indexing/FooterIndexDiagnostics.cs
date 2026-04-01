@@ -4,24 +4,6 @@ internal static class FooterIndexDiagnostics
 {
     public const int RecommendedBitmapDistinctValueThreshold = 256;
 
-    public static void WarnHashLowCardinality(string columnPath, Type fieldType, int distinctValueCount)
-    {
-        WriteWarning(
-            "footer-hash",
-            columnPath,
-            $"Column type '{fieldType.Name}' only exposed {distinctValueCount} distinct values while building the hash index.",
-            GetLowCardinalitySuggestion(fieldType));
-    }
-
-    public static void WarnHashUnsupportedType(string columnPath, Type fieldType)
-    {
-        WriteWarning(
-            "footer-hash",
-            columnPath,
-            $"Column type '{fieldType.Name}' cannot be normalized into a stable hash key.",
-            GetUnsupportedTypeSuggestion(fieldType));
-    }
-
     public static void WarnBitmapUnsupportedType(string columnPath, Type fieldType)
     {
         WriteWarning(
@@ -50,7 +32,7 @@ internal static class FooterIndexDiagnostics
     {
         var parts = new List<string>
         {
-            $"Consider `footer-bitmap` for low-cardinality equality pruning (roughly <= {RecommendedBitmapDistinctValueThreshold} distinct values)"
+            $"Consider a footer bitmap index for low-cardinality equality pruning (roughly <= {RecommendedBitmapDistinctValueThreshold} distinct values)"
         };
 
         if (fieldType == typeof(string))
@@ -69,7 +51,7 @@ internal static class FooterIndexDiagnostics
     {
         var parts = new List<string>
         {
-            "Consider `footer-hash` or a bloom filter for high-cardinality equality lookups"
+            "Consider a bloom filter for high-cardinality equality lookups"
         };
 
         if (fieldType == typeof(string))

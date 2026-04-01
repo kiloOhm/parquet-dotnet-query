@@ -5,9 +5,6 @@ namespace Parquet.Query.Extensions.Indexing;
 
 internal static class FooterIndexStorage
 {
-    public static string GetHashMetadataKey(string columnPath) =>
-        FooterIndexNames.HashMetadataPrefix + Uri.EscapeDataString(columnPath);
-
     public static string GetBitmapMetadataKey(string columnPath) =>
         FooterIndexNames.BitmapMetadataPrefix + Uri.EscapeDataString(columnPath);
 
