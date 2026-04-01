@@ -32,6 +32,9 @@ public partial class MainPage : ContentPage
 
         nativeWebView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
+        // Open the file passed via command-line ("Open with") once React is ready
+        nativeWebView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
+
         // Enable native file drag-and-drop onto the WebView
         nativeWebView.AllowDrop = true;
         nativeWebView.DragOver += OnDragOver;
@@ -45,6 +48,32 @@ public partial class MainPage : ContentPage
 #endif
 
         nativeWebView.Source = new Uri("https://parquet-viewer.local/index.html");
+    }
+
+    private void OnNavigationCompleted(
+        Microsoft.Web.WebView2.Core.CoreWebView2 sender,
+        Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs args)
+    {
+        // Unsubscribe — we only need the first navigation (app load)
+        sender.NavigationCompleted -= OnNavigationCompleted;
+
+        if (!args.IsSuccess || _nativeWebView is null)
+            return;
+
+        var startupFile = App.StartupFilePath;
+        if (startupFile is null)
+            return;
+
+        System.Diagnostics.Debug.WriteLine($"[MainPage] Opening startup file: {startupFile}");
+
+        _ = Task.Run(async () =>
+        {
+            var pushJson = await _bridge.HandleFileDropAsync(startupFile);
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                _nativeWebView.CoreWebView2.PostWebMessageAsJson(pushJson);
+            });
+        });
     }
 
     private void OnWebMessageReceived(

@@ -28,7 +28,7 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Test
-        run: dotnet test Parquet.Query.slnx -c release
+        run: dotnet test tests/Parquet.Query.Tests/Parquet.Query.Tests.csproj -c release
 
   benchmark:
     name: "Benchmarks - Linux x64"
@@ -43,6 +43,34 @@ jobs:
 
       - name: Run Benchmarks
         run: dotnet run -c release --project benchmarks/Parquet.Query.Benchmarks/Parquet.Query.Benchmarks.csproj
+
+  viewer:
+    name: "Viewer - Windows x64"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install MAUI workload
+        run: dotnet workload install maui-windows
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build Viewer
+        run: dotnet publish tools/Parquet.Query.Viewer/src/Parquet.Query.Viewer/Parquet.Query.Viewer.csproj -c Release -f net10.0-windows10.0.19041.0 -o publish
+
+      - uses: actions/upload-artifact@v4
+        name: Upload Viewer
+        with:
+          name: viewer-win-x64
+          path: publish/
 
   build:
     runs-on: ubuntu-latest
@@ -74,7 +102,10 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Build library
-        run: dotnet build Parquet.Query.slnx -c release /p:Version=$VERSION /p:FileVersion=$VERSION_NO_SUFFIX.0 /p:AssemblyVersion=$VERSION_MAJOR.0
+        run: |
+          for csproj in src/*/*.csproj; do
+            dotnet build "$csproj" -c release /p:Version=$VERSION /p:FileVersion=$VERSION_NO_SUFFIX.0 /p:AssemblyVersion=$VERSION_MAJOR.0
+          done
 
       - name: Collect artifacts
         run: |
