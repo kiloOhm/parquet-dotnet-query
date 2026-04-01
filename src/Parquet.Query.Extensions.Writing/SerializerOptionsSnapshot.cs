@@ -64,6 +64,60 @@ internal sealed class SerializerOptionsSnapshot
             CompressionLevel = CompressionLevel,
             RowGroupSize = RowGroupSize,
             PropertyNameCaseInsensitive = PropertyNameCaseInsensitive,
-            ParquetOptions = ParquetOptions
+            ParquetOptions = CloneParquetOptions(ParquetOptions)
         };
+
+    private static Parquet.ParquetOptions? CloneParquetOptions(Parquet.ParquetOptions? source)
+    {
+        if (source is null)
+        {
+            return null;
+        }
+
+        var clone = new Parquet.ParquetOptions
+        {
+            TreatByteArrayAsString = source.TreatByteArrayAsString,
+            TreatBigIntegersAsDates = source.TreatBigIntegersAsDates,
+#if NET6_0_OR_GREATER || NET48
+            UseDateOnlyTypeForDates = source.UseDateOnlyTypeForDates,
+            UseTimeOnlyTypeForTimeMillis = source.UseTimeOnlyTypeForTimeMillis,
+            UseTimeOnlyTypeForTimeMicros = source.UseTimeOnlyTypeForTimeMicros,
+#endif
+            UseDictionaryEncoding = source.UseDictionaryEncoding,
+            DictionaryEncodingThreshold = source.DictionaryEncodingThreshold,
+            UseDeltaBinaryPackedEncoding = source.UseDeltaBinaryPackedEncoding,
+            DataPageRowCountLimit = source.DataPageRowCountLimit,
+            MaximumSmallPoolFreeBytes = source.MaximumSmallPoolFreeBytes,
+            MaximumLargePoolFreeBytes = source.MaximumLargePoolFreeBytes,
+            UseBigDecimal = source.UseBigDecimal,
+            UsePlaintextFooter = source.UsePlaintextFooter,
+            FooterEncryptionKey = source.FooterEncryptionKey,
+            FooterEncryptionKeyMetadata = source.FooterEncryptionKeyMetadata?.ToArray(),
+            FooterSigningKey = source.FooterSigningKey,
+            FooterSigningKeyMetadata = source.FooterSigningKeyMetadata?.ToArray(),
+            AADPrefix = source.AADPrefix,
+            SupplyAadPrefix = source.SupplyAadPrefix,
+            UseCtrVariant = source.UseCtrVariant,
+            ColumnKeyResolver = source.ColumnKeyResolver
+        };
+
+        foreach (var kvp in source.BloomFilterOptionsByColumn)
+        {
+            clone.BloomFilterOptionsByColumn[kvp.Key] = new Parquet.ParquetOptions.BloomFilterOptions
+            {
+                EnableBloomFilters = kvp.Value.EnableBloomFilters,
+                BloomFilterFpp = kvp.Value.BloomFilterFpp,
+                BloomFilterBitsPerValueOverride = kvp.Value.BloomFilterBitsPerValueOverride
+            };
+        }
+
+        foreach (var kvp in source.ColumnKeys)
+        {
+            clone.ColumnKeys[kvp.Key] = new Parquet.ParquetOptions.ColumnKeySpec(
+                kvp.Value.Key,
+                kvp.Value.KeyMetadata?.ToArray());
+        }
+
+        return clone;
+    }
 }

@@ -49,5 +49,41 @@ public sealed class ParquetWritePlan
     /// </summary>
     public IReadOnlyList<ParquetIndexDescriptor> IndexDescriptors { get; }
 
-    internal ParquetSerializerOptions CreateSerializerOptions() => _serializerOptions.ToSerializerOptions();
+    internal ParquetSerializerOptions CreateSerializerOptions()
+    {
+        var serializerOptions = _serializerOptions.ToSerializerOptions();
+        var bloomFilterColumns = IndexDescriptors
+            .Where(descriptor => descriptor.Kind == ParquetIndexKind.BloomFilter)
+            .Select(descriptor => GetBloomFilterColumnKey(descriptor.ColumnPath))
+            .Distinct(StringComparer.Ordinal);
+
+        using var enumerator = bloomFilterColumns.GetEnumerator();
+        if (!enumerator.MoveNext())
+        {
+            return serializerOptions;
+        }
+
+        serializerOptions.ParquetOptions ??= new Parquet.ParquetOptions();
+        do
+        {
+            if (!serializerOptions.ParquetOptions.BloomFilterOptionsByColumn.ContainsKey(enumerator.Current))
+            {
+                serializerOptions.ParquetOptions.BloomFilterOptionsByColumn[enumerator.Current] = new Parquet.ParquetOptions.BloomFilterOptions
+                {
+                    EnableBloomFilters = true
+                };
+            }
+        }
+        while (enumerator.MoveNext());
+
+        return serializerOptions;
+    }
+
+    private static string GetBloomFilterColumnKey(string columnPath)
+    {
+        var separatorIndex = columnPath.LastIndexOf('.');
+        return separatorIndex >= 0
+            ? columnPath.Substring(separatorIndex + 1)
+            : columnPath;
+    }
 }

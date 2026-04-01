@@ -107,6 +107,34 @@ public sealed class ParquetWritePlanBuilderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task WriteAsync_emits_bloom_filter_metadata_for_annotated_columns()
+    {
+        Directory.CreateDirectory(_tempDirectory);
+        var filePath = Path.Combine(_tempDirectory, "bloom.parquet");
+
+        await ParquetFileWriter.WriteAsync(
+            new[]
+            {
+                new OptimizedWriteRow
+                {
+                    Id = 3,
+                    EventName = "refund",
+                    CreatedAt = new DateTime(2024, 3, 4, 5, 6, 7, DateTimeKind.Utc),
+                    Amount = 99.01m,
+                    Customer = new OptimizedCustomer { CustomerId = "C-3" }
+                }
+            },
+            filePath);
+
+        using var reader = await ParquetReader.CreateAsync(filePath);
+        using var rowGroupReader = reader.OpenRowGroupReader(0);
+        var eventNameField = reader.Schema.GetDataFields().Single(field => field.Path.ToString() == "event_name");
+        var metadata = rowGroupReader.GetMetadata(eventNameField);
+
+        Assert.NotNull(metadata?.MetaData?.BloomFilterOffset);
+    }
+
+    [Fact]
     public async Task WriteAsync_serializes_rows_and_dispatches_matching_index_strategies()
     {
         Directory.CreateDirectory(_tempDirectory);
