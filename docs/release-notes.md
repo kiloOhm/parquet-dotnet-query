@@ -1,3 +1,19 @@
+# 0.1.0-preview.6
+
+### Core Query
+
+- Add `DynamicParquetQuery` API for schema-agnostic query execution over already-open `ParquetReader` instances. Supports the full pushdown planning pipeline — including footer index planners for Lucene, bitmap, and bloom filter pruning — without requiring a compile-time row type.
+
+### Indexing Extensions
+
+- Remove hash footer indexes (`FooterHashIndexingStrategy`, `[ParquetFooterHashIndex]`) in favor of built-in Parquet bloom filters, which provide the same equality-pruning capability with better space efficiency and no custom metadata overhead.
+- Update diagnostics to suggest bloom filters instead of hash indexes for high-cardinality columns.
+
+### Parquet Viewer
+
+- Wire query execution and plan generation to the library's `DynamicParquetQuery` pipeline, replacing hand-rolled `PredicateEvaluator`. Footer index planners (Lucene, bitmap) now participate in row group pruning from the viewer.
+- Add browsable index data to the Indices tab: bitmap indexes show all distinct values with row group presence, Lucene indexes show all indexed terms with inverted row group mappings. Entries are filterable and scrollable with colored row group dots.
+
 # 0.1.0-preview.5
 
 ### Parquet Viewer (new)
