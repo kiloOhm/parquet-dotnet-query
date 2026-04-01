@@ -3,8 +3,6 @@ import { bridge } from '@/api/bridge'
 import type { ParquetFileInfo } from '@/api/types'
 import { PaginatedDataGrid } from '@/components/PaginatedDataGrid'
 
-const PAGE_SIZE = 500
-
 interface DataTableProps {
   fileInfo: ParquetFileInfo | null
 }
@@ -26,7 +24,6 @@ export function DataTable({ fileInfo }: DataTableProps) {
   return (
     <PaginatedDataGrid
       fetchPage={fetchPage}
-      pageSize={PAGE_SIZE}
       emptyMessage="Open a file to view data"
       resetKey={fileInfo.path}
     />

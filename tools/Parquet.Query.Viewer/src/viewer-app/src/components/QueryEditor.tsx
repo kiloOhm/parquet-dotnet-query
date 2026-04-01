@@ -65,8 +65,6 @@ interface PredicateRow {
 
 let nextId = 1
 
-const QUERY_PAGE_SIZE = 200
-
 export function QueryEditor({ fileInfo }: QueryEditorProps) {
   const [predicates, setPredicates] = useState<PredicateRow[]>([])
   const [plan, setPlan] = useState<QueryPlan | null>(null)
@@ -305,7 +303,6 @@ export function QueryEditor({ fileInfo }: QueryEditorProps) {
             {queryKey != null ? (
               <PaginatedDataGrid
                 fetchPage={fetchResultPage}
-                pageSize={QUERY_PAGE_SIZE}
                 emptyMessage="No matching rows"
                 resetKey={queryKey}
               />

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   createColumnHelper,
   flexRender,
@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Braces } from 'lucide-react'
+import { Braces, Loader2 } from 'lucide-react'
 
 type RowData = Record<string, unknown>
 
@@ -41,12 +41,17 @@ function complexLabel(val: object): string {
 interface DataGridProps {
   data: DataPage | null
   emptyMessage?: string
+  /** Called when the user scrolls near the end of loaded rows and more data is available. */
+  onLoadMore?: () => void
+  /** Whether more rows can be fetched beyond those currently in `data`. */
+  hasMore?: boolean
 }
 
-export function DataGrid({ data, emptyMessage }: DataGridProps) {
+export function DataGrid({ data, emptyMessage, onLoadMore, hasMore }: DataGridProps) {
   const [columnSizing, setColumnSizing] = useState<Record<string, number>>({})
   const [inspectValue, setInspectValue] = useState<{ column: string; value: unknown } | null>(null)
   const parentRef = useRef<HTMLDivElement>(null)
+  const loadingRef = useRef(false)
 
   const columnHelper = createColumnHelper<RowData>()
 
@@ -112,13 +117,31 @@ export function DataGrid({ data, emptyMessage }: DataGridProps) {
   })
 
   const tableRows = table.getRowModel().rows
+  // Add one sentinel row for the loading indicator when more data is available
+  const virtualRowCount = tableRows.length + (hasMore ? 1 : 0)
 
   const rowVirtualizer = useVirtualizer({
-    count: tableRows.length,
+    count: virtualRowCount,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 32,
     overscan: 20,
   })
+
+  // Trigger onLoadMore when the user scrolls near the end of loaded rows
+  const virtualItems = rowVirtualizer.getVirtualItems()
+  const lastItem = virtualItems[virtualItems.length - 1]
+  useEffect(() => {
+    if (!lastItem || !onLoadMore || !hasMore) return
+    if (lastItem.index >= tableRows.length - 1 && !loadingRef.current) {
+      loadingRef.current = true
+      onLoadMore()
+    }
+  }, [lastItem?.index, tableRows.length, onLoadMore, hasMore])
+
+  // Reset the loading guard when row count grows (fetch completed)
+  useEffect(() => {
+    loadingRef.current = false
+  }, [tableRows.length])
 
   if (!data || data.rows.length === 0) {
     return (
@@ -162,6 +185,29 @@ export function DataGrid({ data, emptyMessage }: DataGridProps) {
           </thead>
           <tbody style={{ height: `${rowVirtualizer.getTotalSize()}px`, display: 'block', position: 'relative' }}>
             {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              // Sentinel row: loading spinner
+              if (virtualRow.index >= tableRows.length) {
+                return (
+                  <tr
+                    key="sentinel"
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: totalWidth,
+                      height: `${virtualRow.size}px`,
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                  >
+                    <td
+                      style={{ width: totalWidth }}
+                      className="inline-flex items-center justify-center text-muted-foreground"
+                    >
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    </td>
+                  </tr>
+                )
+              }
               const row = tableRows[virtualRow.index]!
               return (
                 <tr
