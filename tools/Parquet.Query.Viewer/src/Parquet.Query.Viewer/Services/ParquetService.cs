@@ -18,6 +18,7 @@ public sealed class ParquetService : IDisposable
     private EncryptionConfig? _currentEncryption;
     private long[]? _rowGroupRowCounts;
     private long _totalRowCount;
+    private Dictionary<string, IndexEntry[]>? _indexEntryCache;
 
     public bool HasOpenFile => _reader is not null;
     public string? CurrentFilePath => _currentFilePath;
@@ -466,6 +467,7 @@ public sealed class ParquetService : IDisposable
 
         // --- Custom indices from footer metadata ---
         var customIndices = new List<ColumnIndexInfo>();
+        var entryCache = new Dictionary<string, IndexEntry[]>(StringComparer.Ordinal);
         var metadata = _reader!.CustomMetadata;
         if (metadata is not null)
         {
@@ -475,7 +477,9 @@ public sealed class ParquetService : IDisposable
                 if (kv.Key.StartsWith("parquet.query.index.bitmap.v1/"))
                 {
                     var col = Uri.UnescapeDataString(kv.Key["parquet.query.index.bitmap.v1/".Length..]);
-                    var stats = TryParseBitmapStats(kv.Value, rgCount);
+                    var (stats, entries) = ParseBitmapIndex(kv.Value, rgCount);
+                    if (stats is not null)
+                        entryCache[$"Bitmap:{col}"] = entries;
                     customIndices.Add(new ColumnIndexInfo(col, "Bitmap",
                         "Low-cardinality equality index. Stores a bitmap of which row groups contain each distinct value. Best for columns with ~256 or fewer distinct values.",
                         ["= (equality)", "!= (inequality)"],
@@ -484,7 +488,9 @@ public sealed class ParquetService : IDisposable
                 else if (kv.Key.StartsWith("parquet.query.lucene.v1/"))
                 {
                     var col = Uri.UnescapeDataString(kv.Key["parquet.query.lucene.v1/".Length..]);
-                    var stats = TryParseLuceneStats(kv.Value, rgCount);
+                    var (stats, entries) = ParseLuceneIndex(kv.Value, rgCount);
+                    if (stats is not null)
+                        entryCache[$"Lucene:{col}"] = entries;
                     customIndices.Add(new ColumnIndexInfo(col, "Lucene",
                         "Full-text search index with tokenization and optional fuzzy matching (Levenshtein distance 0-2). Prunes row groups by term presence.",
                         ["LuceneMatch (term search)", "LuceneFuzzy (fuzzy matching)"],
@@ -492,6 +498,8 @@ public sealed class ParquetService : IDisposable
                 }
             }
         }
+
+        _indexEntryCache = entryCache;
 
         // --- Built-in optimizations per column ---
         var dataFields = _reader.Schema.GetDataFields();
@@ -552,6 +560,24 @@ public sealed class ParquetService : IDisposable
             customIndices.ToArray(),
             builtinInfo.ToArray(),
             sortingCols.ToArray());
+    }
+
+    public IndexEntriesPage GetIndexEntries(string columnPath, string indexType, int offset, int limit, string? filter)
+    {
+        EnsureOpen();
+
+        var cacheKey = $"{indexType}:{columnPath}";
+        if (_indexEntryCache is null || !_indexEntryCache.TryGetValue(cacheKey, out var allEntries))
+            return new IndexEntriesPage([], 0, offset, limit);
+
+        IEnumerable<IndexEntry> source = allEntries;
+        if (!string.IsNullOrWhiteSpace(filter))
+            source = source.Where(e => e.Key.Contains(filter, StringComparison.OrdinalIgnoreCase));
+
+        var filtered = source as IndexEntry[] ?? source.ToArray();
+        var page = filtered.Skip(offset).Take(limit).ToArray();
+
+        return new IndexEntriesPage(page, filtered.Length, offset, limit);
     }
 
     private RowGroupInfo[] GetRowGroupsMetadata()
@@ -758,6 +784,7 @@ public sealed class ParquetService : IDisposable
     {
         _reader?.Dispose();
         _reader = null;
+        _indexEntryCache = null;
     }
 
     // --- Footer index payload parsing for stats ---
@@ -788,27 +815,29 @@ public sealed class ParquetService : IDisposable
         return (long)(base64Payload.Length * 3.0 / 4.0);
     }
 
-    private static IndexStats? TryParseBitmapStats(string payload, int rowGroupCount)
+    private static (IndexStats? Stats, IndexEntry[] Entries) ParseBitmapIndex(string payload, int rowGroupCount)
     {
         var model = TryDeserializePayload<ViewerBitmapIndexModel>(payload);
-        if (model is null) return null;
+        if (model is null) return (null, []);
 
         var entries = model.Values?
             .Select(v => new IndexEntry(v.Value ?? "", v.RowGroups ?? []))
             .ToArray() ?? [];
 
-        return new IndexStats(
+        var stats = new IndexStats(
             EstimatePayloadBytes(payload),
             DistinctValueCount: model.Values?.Count ?? 0,
-            Entries: entries);
+            EntryCount: entries.Length);
+
+        return (stats, entries);
     }
 
-    private static IndexStats? TryParseLuceneStats(string payload, int rowGroupCount)
+    private static (IndexStats? Stats, IndexEntry[] Entries) ParseLuceneIndex(string payload, int rowGroupCount)
     {
         var model = TryDeserializePayload<ViewerLuceneIndexModel>(payload);
-        if (model is null) return null;
+        if (model is null) return (null, []);
 
-        // Build term → row groups mapping by inverting the per-row-group ordinal lists
+        // Build term -> row groups mapping by inverting the per-row-group ordinal lists
         var termRowGroups = new Dictionary<int, List<int>>();
         if (model.RowGroups is not null)
         {
@@ -834,10 +863,12 @@ public sealed class ParquetService : IDisposable
             entries[i] = new IndexEntry(terms[i], rgs);
         }
 
-        return new IndexStats(
+        var stats = new IndexStats(
             EstimatePayloadBytes(payload),
             TermCount: terms.Count,
-            Entries: entries);
+            EntryCount: entries.Length);
+
+        return (stats, entries);
     }
 
     private sealed class ViewerBitmapIndexModel

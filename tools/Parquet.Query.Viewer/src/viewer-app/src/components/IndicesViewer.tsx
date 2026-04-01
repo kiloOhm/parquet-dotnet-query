@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { bridge } from '@/api/bridge'
 import type { ColumnIndexInfo, IndexEntry, IndicesInfo, ParquetFileInfo } from '@/api/types'
 import { useError } from '@/components/ErrorDialog'
@@ -15,6 +16,7 @@ import {
   ChevronRight,
   Database,
   Hash,
+  Loader2,
   Minus,
   Search,
 } from 'lucide-react'
@@ -82,17 +84,69 @@ function RowGroupDots({ rowGroups, maxRowGroup }: { rowGroups: number[]; maxRowG
   )
 }
 
-function EntryBrowser({ entries, indexType, maxRowGroup }: {
-  entries: IndexEntry[]
+const PAGE_SIZE = 100
+
+function EntryBrowser({ columnPath, indexType, totalEntryCount, maxRowGroup }: {
+  columnPath: string
   indexType: string
+  totalEntryCount: number
   maxRowGroup: number
 }) {
   const [filter, setFilter] = useState('')
-  const filtered = useMemo(() => {
-    if (!filter) return entries
-    const lower = filter.toLowerCase()
-    return entries.filter(e => e.key.toLowerCase().includes(lower))
-  }, [entries, filter])
+  const [debouncedFilter, setDebouncedFilter] = useState('')
+  const [entries, setEntries] = useState<IndexEntry[]>([])
+  const [totalEntries, setTotalEntries] = useState(totalEntryCount)
+  const [loading, setLoading] = useState(false)
+  const [hasMore, setHasMore] = useState(true)
+  const parentRef = useRef<HTMLDivElement>(null)
+  const loadingRef = useRef(false)
+
+  // Debounce filter input
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedFilter(filter), 250)
+    return () => clearTimeout(timer)
+  }, [filter])
+
+  // Reset and load first page when filter changes
+  useEffect(() => {
+    setEntries([])
+    setHasMore(true)
+    loadPage(0, debouncedFilter, true)
+  }, [debouncedFilter, columnPath, indexType])
+
+  const loadPage = useCallback((offset: number, filterValue: string, replace: boolean) => {
+    if (loadingRef.current) return
+    loadingRef.current = true
+    setLoading(true)
+    bridge.getIndexEntries(columnPath, indexType, offset, PAGE_SIZE, filterValue || undefined)
+      .then((page) => {
+        setEntries(prev => replace ? page.entries : [...prev, ...page.entries])
+        setTotalEntries(page.totalEntries)
+        setHasMore(offset + page.entries.length < page.totalEntries)
+      })
+      .catch(() => setHasMore(false))
+      .finally(() => {
+        loadingRef.current = false
+        setLoading(false)
+      })
+  }, [columnPath, indexType])
+
+  const rowVirtualizer = useVirtualizer({
+    count: entries.length + (hasMore ? 1 : 0),
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 28,
+    overscan: 10,
+  })
+
+  // Load next page when the sentinel row becomes visible
+  const virtualItems = rowVirtualizer.getVirtualItems()
+  const lastItem = virtualItems[virtualItems.length - 1]
+  useEffect(() => {
+    if (!lastItem) return
+    if (lastItem.index >= entries.length - 1 && hasMore && !loadingRef.current) {
+      loadPage(entries.length, debouncedFilter, false)
+    }
+  }, [lastItem?.index, entries.length, hasMore, debouncedFilter, loadPage])
 
   const keyLabel = indexType === 'Lucene' ? 'Term'
     : indexType === 'Bitmap' ? 'Value'
@@ -105,15 +159,16 @@ function EntryBrowser({ entries, indexType, maxRowGroup }: {
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
           <Input
             className="h-7 pl-7 text-xs"
-            placeholder={`Filter ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}...`}
+            placeholder={`Filter ${totalEntryCount.toLocaleString()} ${totalEntryCount === 1 ? 'entry' : 'entries'}...`}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
         </div>
         <span className="text-[10px] text-muted-foreground whitespace-nowrap tabular-nums">
-          {filtered.length === entries.length
-            ? `${entries.length} entries`
-            : `${filtered.length} / ${entries.length}`}
+          {loading && <Loader2 className="inline h-3 w-3 animate-spin mr-1" />}
+          {totalEntries === totalEntryCount
+            ? `${totalEntries.toLocaleString()} entries`
+            : `${totalEntries.toLocaleString()} / ${totalEntryCount.toLocaleString()}`}
         </span>
       </div>
 
@@ -126,30 +181,60 @@ function EntryBrowser({ entries, indexType, maxRowGroup }: {
             </tr>
           </thead>
         </table>
-        <ScrollArea className="max-h-[280px]">
-          <table className="w-full text-xs">
-            <tbody>
-              {filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={2} className="px-3 py-4 text-center text-muted-foreground">
-                    {filter ? 'No matching entries' : 'No entries'}
-                  </td>
-                </tr>
-              ) : (
-                filtered.map((entry) => (
-                  <tr key={entry.key} className="border-b last:border-0 hover:bg-muted/20">
-                    <td className="px-3 py-1.5 font-mono truncate max-w-[200px]" title={entry.key}>
+
+        <div ref={parentRef} className="max-h-[280px] overflow-auto">
+          {entries.length === 0 && !loading ? (
+            <div className="px-3 py-4 text-center text-muted-foreground text-xs">
+              {debouncedFilter ? 'No matching entries' : 'No entries'}
+            </div>
+          ) : (
+            <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative' }}>
+              {virtualItems.map((virtualRow) => {
+                if (virtualRow.index >= entries.length) {
+                  // Sentinel / loading row
+                  return (
+                    <div
+                      key="loading"
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: `${virtualRow.size}px`,
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                      className="flex items-center justify-center text-xs text-muted-foreground"
+                    >
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    </div>
+                  )
+                }
+                const entry = entries[virtualRow.index]!
+                return (
+                  <div
+                    key={entry.key}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      height: `${virtualRow.size}px`,
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                    className="flex items-center border-b last:border-0 hover:bg-muted/20 text-xs"
+                  >
+                    <span className="px-3 py-1 font-mono truncate flex-1 min-w-0" title={entry.key}>
                       {entry.key}
-                    </td>
-                    <td className="px-3 py-1.5">
+                    </span>
+                    <span className="px-3 py-1 shrink-0">
                       <RowGroupDots rowGroups={entry.rowGroups} maxRowGroup={maxRowGroup} />
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </ScrollArea>
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Row group legend */}
@@ -170,7 +255,7 @@ function IndexCard({ idx, maxRowGroup }: { idx: ColumnIndexInfo; maxRowGroup: nu
   const Icon = INDEX_ICONS[idx.indexType] ?? Hash
   const colorClass = INDEX_COLORS[idx.indexType] ?? 'bg-muted text-foreground border-border'
   const stats = idx.stats
-  const hasEntries = stats?.entries && stats.entries.length > 0
+  const hasEntries = stats != null && stats.entryCount > 0
 
   return (
     <div className="px-4 py-3 space-y-2">
@@ -216,8 +301,9 @@ function IndexCard({ idx, maxRowGroup }: { idx: ColumnIndexInfo; maxRowGroup: nu
 
           {expanded && (
             <EntryBrowser
-              entries={stats!.entries!}
+              columnPath={idx.columnPath}
               indexType={idx.indexType}
+              totalEntryCount={stats!.entryCount}
               maxRowGroup={maxRowGroup}
             />
           )}

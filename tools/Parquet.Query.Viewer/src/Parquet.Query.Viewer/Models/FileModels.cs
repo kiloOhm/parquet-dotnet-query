@@ -74,7 +74,13 @@ public sealed record IndexStats(
     long PayloadBytes,
     int? TermCount = null,
     int? DistinctValueCount = null,
-    IndexEntry[]? Entries = null);
+    int EntryCount = 0);
+
+public sealed record IndexEntriesPage(
+    IndexEntry[] Entries,
+    int TotalEntries,
+    int Offset,
+    int Limit);
 
 /// <summary>
 /// A single browsable entry in a footer index: a key (term, value, or bucket id)

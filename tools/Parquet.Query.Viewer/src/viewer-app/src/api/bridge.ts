@@ -2,6 +2,7 @@ import type {
   DataPage,
   EncryptionConfig,
   FileMetadataInfo,
+  IndexEntriesPage,
   IndicesInfo,
   ParquetFileInfo,
   PickFileResult,
@@ -239,38 +240,14 @@ function mockInvoke<T>(method: string, _params?: unknown): Promise<T> {
             indexType: 'Bitmap',
             description: 'Low-cardinality equality index. Stores a bitmap of which row groups contain each distinct value.',
             acceleratedOperations: ['= (equality)', '!= (inequality)'],
-            stats: {
-              payloadBytes: 312,
-              distinctValueCount: 6,
-              entries: [
-                { key: 'New York', rowGroups: [0, 1, 3] },
-                { key: 'London', rowGroups: [0, 2] },
-                { key: 'Tokyo', rowGroups: [1, 2, 3] },
-                { key: 'Berlin', rowGroups: [0, 1] },
-                { key: 'Paris', rowGroups: [2, 3] },
-                { key: 'Sydney', rowGroups: [1] },
-              ],
-            },
+            stats: { payloadBytes: 312, distinctValueCount: 6, entryCount: 6 },
           },
           {
             columnPath: 'name',
             indexType: 'Lucene',
             description: 'Full-text search index with tokenization and optional fuzzy matching.',
             acceleratedOperations: ['LuceneMatch (term search)', 'LuceneFuzzy (fuzzy matching)'],
-            stats: {
-              payloadBytes: 2048,
-              termCount: 8,
-              entries: [
-                { key: 'alice', rowGroups: [0, 2] },
-                { key: 'bob', rowGroups: [0, 1, 3] },
-                { key: 'charlie', rowGroups: [1] },
-                { key: 'diana', rowGroups: [1, 2] },
-                { key: 'eve', rowGroups: [2, 3] },
-                { key: 'frank', rowGroups: [0, 3] },
-                { key: 'grace', rowGroups: [3] },
-                { key: 'hank', rowGroups: [0, 1, 2, 3] },
-              ],
-            },
+            stats: { payloadBytes: 2048, termCount: 8, entryCount: 8 },
           },
         ],
         builtinInfo: mockColumns.map((name, i) => ({
@@ -282,6 +259,44 @@ function mockInvoke<T>(method: string, _params?: unknown): Promise<T> {
         })),
         sortingColumns: ['id ASC'],
       } as T)
+
+    case 'getIndexEntries': {
+      const ep = _params as { columnPath?: string; indexType?: string; offset?: number; limit?: number; filter?: string } | undefined
+      const allEntries: Record<string, { key: string; rowGroups: number[] }[]> = {
+        'Bitmap:city': [
+          { key: 'New York', rowGroups: [0, 1, 3] },
+          { key: 'London', rowGroups: [0, 2] },
+          { key: 'Tokyo', rowGroups: [1, 2, 3] },
+          { key: 'Berlin', rowGroups: [0, 1] },
+          { key: 'Paris', rowGroups: [2, 3] },
+          { key: 'Sydney', rowGroups: [1] },
+        ],
+        'Lucene:name': [
+          { key: 'alice', rowGroups: [0, 2] },
+          { key: 'bob', rowGroups: [0, 1, 3] },
+          { key: 'charlie', rowGroups: [1] },
+          { key: 'diana', rowGroups: [1, 2] },
+          { key: 'eve', rowGroups: [2, 3] },
+          { key: 'frank', rowGroups: [0, 3] },
+          { key: 'grace', rowGroups: [3] },
+          { key: 'hank', rowGroups: [0, 1, 2, 3] },
+        ],
+      }
+      const cacheKey = `${ep?.indexType ?? ''}:${ep?.columnPath ?? ''}`
+      let entries = allEntries[cacheKey] ?? []
+      if (ep?.filter) {
+        const lower = ep.filter.toLowerCase()
+        entries = entries.filter(e => e.key.toLowerCase().includes(lower))
+      }
+      const off = ep?.offset ?? 0
+      const lim = ep?.limit ?? 100
+      return Promise.resolve({
+        entries: entries.slice(off, off + lim),
+        totalEntries: entries.length,
+        offset: off,
+        limit: lim,
+      } as T)
+    }
 
     default:
       return Promise.reject(new Error(`Mock: unknown method '${method}'`))
@@ -295,6 +310,8 @@ export const bridge = {
   getSchema: () => invoke<{ columns: unknown[] }>('getSchema'),
   getMetadata: () => invoke<FileMetadataInfo>('getMetadata'),
   getIndices: () => invoke<IndicesInfo>('getIndices'),
+  getIndexEntries: (columnPath: string, indexType: string, offset = 0, limit = 100, filter?: string) =>
+    invoke<IndexEntriesPage>('getIndexEntries', { columnPath, indexType, offset, limit, filter }),
   getData: (offset = 0, limit = 500) => invoke<DataPage>('getData', { offset, limit }),
   executeQuery: (predicates: QueryPredicate[], offset = 0, limit = 200) =>
     invoke<QueryResult>('executeQuery', { predicates, offset, limit }),

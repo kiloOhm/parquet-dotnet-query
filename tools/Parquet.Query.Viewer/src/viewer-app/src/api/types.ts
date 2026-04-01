@@ -80,7 +80,14 @@ export interface IndexStats {
   payloadBytes: number
   termCount?: number
   distinctValueCount?: number
-  entries?: IndexEntry[]
+  entryCount: number
+}
+
+export interface IndexEntriesPage {
+  entries: IndexEntry[]
+  totalEntries: number
+  offset: number
+  limit: number
 }
 
 export interface ColumnIndexInfo {

@@ -61,6 +61,7 @@ public sealed class WebViewBridge
             "getSchema" => HandleGetSchema(),
             "getMetadata" => HandleGetMetadata(),
             "getIndices" => HandleGetIndices(),
+            "getIndexEntries" => HandleGetIndexEntries(request.Params),
             "getData" => await HandleGetDataAsync(request.Params),
             "executeQuery" => await HandleExecuteQueryAsync(request.Params),
             "getQueryPlan" => await HandleGetQueryPlanAsync(request.Params),
@@ -159,6 +160,16 @@ public sealed class WebViewBridge
     private object? HandleGetIndices()
     {
         return _parquetService.GetIndices();
+    }
+
+    private object? HandleGetIndexEntries(JsonElement? param)
+    {
+        var columnPath = param?.TryGetProperty("columnPath", out var cp) == true ? cp.GetString() ?? "" : "";
+        var indexType = param?.TryGetProperty("indexType", out var it) == true ? it.GetString() ?? "" : "";
+        var offset = param?.TryGetProperty("offset", out var o) == true ? o.GetInt32() : 0;
+        var limit = param?.TryGetProperty("limit", out var l) == true ? l.GetInt32() : 100;
+        var filter = param?.TryGetProperty("filter", out var f) == true ? f.GetString() : null;
+        return _parquetService.GetIndexEntries(columnPath, indexType, offset, limit, filter);
     }
 
     private async Task<object?> HandleGetDataAsync(JsonElement? param)
