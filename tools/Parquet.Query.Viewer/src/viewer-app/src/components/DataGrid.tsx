@@ -181,9 +181,11 @@ export function DataGrid({ data, emptyMessage }: DataGridProps) {
                       <td
                         key={cell.id}
                         style={{ width: w, maxWidth: w, minWidth: w, height: `${virtualRow.size}px` }}
-                        className="px-3 py-1.5 text-sm border-b border-r truncate inline-block box-border"
+                        className="px-3 py-1.5 text-sm border-b border-r inline-block box-border"
                       >
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        <div className="truncate">
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </div>
                       </td>
                     )
                   })}
