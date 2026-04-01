@@ -1,8 +1,7 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { bridge } from '@/api/bridge'
-import type { DataPage, ParquetFileInfo, QueryPlan, QueryPredicate } from '@/api/types'
-import { useError } from '@/components/ErrorDialog'
-import { DataGrid } from '@/components/DataGrid'
+import type { ParquetFileInfo, QueryPlan, QueryPredicate } from '@/api/types'
+import { PaginatedDataGrid } from '@/components/PaginatedDataGrid'
 import { buildCodeSnippet } from '@/components/query-language'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -21,7 +20,6 @@ import { formatMs, formatNumber } from '@/lib/utils'
 import {
   CheckCircle2,
   Code2,
-  Loader2,
   Play,
   Plus,
   Sparkles,
@@ -67,13 +65,16 @@ interface PredicateRow {
 
 let nextId = 1
 
+const QUERY_PAGE_SIZE = 200
+
 export function QueryEditor({ fileInfo }: QueryEditorProps) {
   const [predicates, setPredicates] = useState<PredicateRow[]>([])
   const [plan, setPlan] = useState<QueryPlan | null>(null)
-  const [resultData, setResultData] = useState<DataPage | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [queryKey, setQueryKey] = useState<number | null>(null)
   const [activeTab, setActiveTab] = useState('results')
-  const showError = useError()
+
+  // Keep the latest built predicates available for the fetch callback
+  const predicatesRef = useRef<QueryPredicate[]>([])
 
   const addPredicate = () => {
     const firstCol = fileInfo?.schema.columns[0]?.name ?? ''
@@ -109,20 +110,18 @@ export function QueryEditor({ fileInfo }: QueryEditorProps) {
         } : {}),
       }))
 
-  const executeQuery = useCallback(async () => {
+  const fetchResultPage = useCallback(async (offset: number, limit: number) => {
+    const result = await bridge.executeQuery(predicatesRef.current, offset, limit)
+    setPlan(result.plan)
+    return result.data
+  }, [])
+
+  const executeQuery = useCallback(() => {
     if (!fileInfo) return
-    setLoading(true)
+    predicatesRef.current = buildPredicates()
     setActiveTab('results')
-    try {
-      const result = await bridge.executeQuery(buildPredicates(), 0, 200)
-      setPlan(result.plan)
-      setResultData(result.data)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      showError('Failed to execute query', msg)
-    } finally {
-      setLoading(false)
-    }
+    // Bump the key so PaginatedDataGrid resets and fetches page 0
+    setQueryKey((k) => (k ?? 0) + 1)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileInfo, predicates])
 
@@ -253,14 +252,10 @@ export function QueryEditor({ fileInfo }: QueryEditorProps) {
         <div className="px-2 py-2 border-t flex gap-2 shrink-0">
           <Button
             size="sm" className="flex-1 h-8"
-            disabled={loading || !canRunQuery}
-            onClick={() => void executeQuery()}
+            disabled={!canRunQuery}
+            onClick={() => executeQuery()}
           >
-            {loading ? (
-              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-            ) : (
-              <Play className="h-3 w-3 mr-1" />
-            )}
+            <Play className="h-3 w-3 mr-1" />
             Execute
           </Button>
           {predicates.length > 0 && (
@@ -269,7 +264,7 @@ export function QueryEditor({ fileInfo }: QueryEditorProps) {
               onClick={() => {
                 setPredicates([])
                 setPlan(null)
-                setResultData(null)
+                setQueryKey(null)
               }}
             >
               <Trash2 className="h-3 w-3" />
@@ -290,12 +285,7 @@ export function QueryEditor({ fileInfo }: QueryEditorProps) {
               </TabsTrigger>
             </TabsList>
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
-              {resultData ? (
-                <>
-                  <span>{formatNumber(resultData.totalRows)} matched rows</span>
-                  <span>{formatNumber(resultData.rows.length)} loaded</span>
-                </>
-              ) : plan ? (
+              {plan ? (
                 <>
                   <span>
                     {plan.selectedRowGroups}/{plan.totalRowGroups} row groups
@@ -312,15 +302,18 @@ export function QueryEditor({ fileInfo }: QueryEditorProps) {
           </div>
 
           <TabsContent value="results" className="flex-1 overflow-hidden flex flex-col">
-            {resultData && (
-              <div className="px-3 py-2 border-b bg-muted/30 text-xs text-muted-foreground shrink-0">
-                Showing {formatNumber(resultData.rows.length)} of {formatNumber(resultData.totalRows)} matched rows
+            {queryKey != null ? (
+              <PaginatedDataGrid
+                fetchPage={fetchResultPage}
+                pageSize={QUERY_PAGE_SIZE}
+                emptyMessage="No matching rows"
+                resetKey={queryKey}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
+                {canRunQuery ? 'Execute the query to load matching rows.' : 'Add predicates and click Execute.'}
               </div>
             )}
-            <DataGrid
-              data={resultData}
-              emptyMessage={canRunQuery ? 'Execute the query to load matching rows.' : 'Add predicates and click Execute.'}
-            />
           </TabsContent>
 
           <TabsContent value="plan" className="flex-1 overflow-hidden">
