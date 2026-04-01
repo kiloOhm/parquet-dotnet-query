@@ -20,6 +20,11 @@ public sealed class ParquetService : IDisposable
     private long _totalRowCount;
     private Dictionary<string, IndexEntry[]>? _indexEntryCache;
 
+    // Serialize async access to _reader — the underlying file stream is NOT
+    // thread-safe (especially for encrypted files where concurrent reads
+    // corrupt the stream position and break AES-GCM decryption).
+    private readonly SemaphoreSlim _readerLock = new(1, 1);
+
     public bool HasOpenFile => _reader is not null;
     public string? CurrentFilePath => _currentFilePath;
 
@@ -91,60 +96,68 @@ public sealed class ParquetService : IDisposable
     public async Task<DataPage> GetDataAsync(int offset, int limit)
     {
         EnsureOpen();
-        var topFields = _reader!.Schema.Fields;
-        var columns = topFields.Select(f => f.Name).ToArray();
-        var dataTypes = topFields.Select(FieldTypeName).ToArray();
-        var rows = new List<object?[]>();
-
-        long currentRow = 0;
-        for (int rg = 0; rg < _reader.RowGroupCount && rows.Count < limit; rg++)
+        await _readerLock.WaitAsync();
+        try
         {
-            var rgRowCount = _rowGroupRowCounts![rg];
+            var topFields = _reader!.Schema.Fields;
+            var columns = topFields.Select(f => f.Name).ToArray();
+            var dataTypes = topFields.Select(FieldTypeName).ToArray();
+            var rows = new List<object?[]>();
 
-            if (currentRow + rgRowCount <= offset)
+            long currentRow = 0;
+            for (int rg = 0; rg < _reader.RowGroupCount && rows.Count < limit; rg++)
             {
-                currentRow += rgRowCount;
-                continue;
-            }
+                var rgRowCount = _rowGroupRowCounts![rg];
 
-            using var rgReader = _reader.OpenRowGroupReader(rg);
-
-            // Read all leaf DataColumns with their repetition/definition levels
-            var allDataFields = _reader.Schema.GetDataFields();
-            var dataColumns = new Dictionary<string, DataColumn>();
-            foreach (var df in allDataFields)
-            {
-                if (rgReader.ColumnExists(df))
+                if (currentRow + rgRowCount <= offset)
                 {
-                    dataColumns[df.Path.ToString()] = await rgReader.ReadColumnAsync(df);
+                    currentRow += rgRowCount;
+                    continue;
                 }
+
+                using var rgReader = _reader.OpenRowGroupReader(rg);
+
+                // Read all leaf DataColumns with their repetition/definition levels
+                var allDataFields = _reader.Schema.GetDataFields();
+                var dataColumns = new Dictionary<string, DataColumn>();
+                foreach (var df in allDataFields)
+                {
+                    if (rgReader.ColumnExists(df))
+                    {
+                        dataColumns[df.Path.ToString()] = await rgReader.ReadColumnAsync(df);
+                    }
+                }
+
+                // Reconstruct per-row values for each top-level field
+                var fieldRows = new List<object?[]>();
+                for (int f = 0; f < topFields.Count; f++)
+                {
+                    var reconstructed = ReconstructField(topFields[f], dataColumns, (int)rgRowCount);
+                    // Pad fieldRows if this is the first field
+                    while (fieldRows.Count < reconstructed.Count)
+                        fieldRows.Add(new object?[topFields.Count]);
+                    for (int r = 0; r < reconstructed.Count; r++)
+                        fieldRows[r][f] = reconstructed[r];
+                }
+
+                var rgStart = (int)Math.Max(0, offset - currentRow);
+                var rgEnd = (int)Math.Min(rgRowCount, offset + limit - currentRow);
+
+                for (int i = rgStart; i < rgEnd && rows.Count < limit; i++)
+                {
+                    if (i < fieldRows.Count)
+                        rows.Add(fieldRows[i]);
+                }
+
+                currentRow += rgRowCount;
             }
 
-            // Reconstruct per-row values for each top-level field
-            var fieldRows = new List<object?[]>();
-            for (int f = 0; f < topFields.Count; f++)
-            {
-                var reconstructed = ReconstructField(topFields[f], dataColumns, (int)rgRowCount);
-                // Pad fieldRows if this is the first field
-                while (fieldRows.Count < reconstructed.Count)
-                    fieldRows.Add(new object?[topFields.Count]);
-                for (int r = 0; r < reconstructed.Count; r++)
-                    fieldRows[r][f] = reconstructed[r];
-            }
-
-            var rgStart = (int)Math.Max(0, offset - currentRow);
-            var rgEnd = (int)Math.Min(rgRowCount, offset + limit - currentRow);
-
-            for (int i = rgStart; i < rgEnd && rows.Count < limit; i++)
-            {
-                if (i < fieldRows.Count)
-                    rows.Add(fieldRows[i]);
-            }
-
-            currentRow += rgRowCount;
+            return new DataPage(columns, dataTypes, rows.ToArray(), offset, limit, _totalRowCount);
         }
-
-        return new DataPage(columns, dataTypes, rows.ToArray(), offset, limit, _totalRowCount);
+        finally
+        {
+            _readerLock.Release();
+        }
     }
 
     /// <summary>
@@ -365,100 +378,116 @@ public sealed class ParquetService : IDisposable
     public async Task<QueryResult> ExecuteQueryAsync(QueryRequest request)
     {
         EnsureOpen();
-        var sw = Stopwatch.StartNew();
-        var dataFields = _reader!.Schema.GetDataFields();
-        var columns = dataFields.Select(f => f.Name).ToArray();
-        var dataTypes = dataFields.Select(f => f.ClrType.Name).ToArray();
+        await _readerLock.WaitAsync();
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            var dataFields = _reader!.Schema.GetDataFields();
+            var columns = dataFields.Select(f => f.Name).ToArray();
+            var dataTypes = dataFields.Select(f => f.ClrType.Name).ToArray();
 
-        var dynamicPredicates = request.Predicates
-            .Select(p => new DynamicPredicate(p.Column, p.Operator, p.Value, p.Value2, p.MaxEdits, p.PrefixLength, p.Transpositions))
-            .ToArray();
+            var dynamicPredicates = request.Predicates
+                .Select(p => new DynamicPredicate(p.Column, p.Operator, p.Value, p.Value2, p.MaxEdits, p.PrefixLength, p.Transpositions))
+                .ToArray();
 
-        var query = DynamicParquetQuery.FromReader(_reader, _currentFilePath);
-        if (dynamicPredicates.Length > 0)
-            query = query.Where(dynamicPredicates);
+            var query = DynamicParquetQuery.FromReader(_reader, _currentFilePath);
+            if (dynamicPredicates.Length > 0)
+                query = query.Where(dynamicPredicates);
 
-        var result = await query.ExecuteAsync(request.Offset, request.Limit);
-        sw.Stop();
+            var result = await query.ExecuteAsync(request.Offset, request.Limit);
+            sw.Stop();
 
-        var libraryPlan = result.Plan;
-        var hasResidualOnly = libraryPlan.PushdownPredicates.Count == 0 && libraryPlan.ResidualPredicates.Count > 0;
-        var residualNote = hasResidualOnly
-            ? $"Residual filter: {string.Join(", ", libraryPlan.ResidualPredicates)} — all row groups scanned."
-            : null;
+            var libraryPlan = result.Plan;
+            var hasResidualOnly = libraryPlan.PushdownPredicates.Count == 0 && libraryPlan.ResidualPredicates.Count > 0;
+            var residualNote = hasResidualOnly
+                ? $"Residual filter: {string.Join(", ", libraryPlan.ResidualPredicates)} — all row groups scanned."
+                : null;
 
-        var decisions = libraryPlan.RowGroups
-            .Select(rg => new RowGroupDecision(
-                rg.Index,
-                rg.ShouldRead,
-                FormatRowGroupReason(rg, residualNote),
-                rg.RowCount))
-            .ToArray();
+            var decisions = libraryPlan.RowGroups
+                .Select(rg => new RowGroupDecision(
+                    rg.Index,
+                    rg.ShouldRead,
+                    FormatRowGroupReason(rg, residualNote),
+                    rg.RowCount))
+                .ToArray();
 
-        var candidateRows = libraryPlan.RowGroups
-            .Where(rg => rg.ShouldRead)
-            .Sum(rg => rg.CandidateRowCountUpperBound);
+            var candidateRows = libraryPlan.RowGroups
+                .Where(rg => rg.ShouldRead)
+                .Sum(rg => rg.CandidateRowCountUpperBound);
 
-        var plan = new Models.QueryPlan(
-            libraryPlan.RowGroups.Count,
-            libraryPlan.SelectedRowGroupCount,
-            libraryPlan.RowGroups.Count - libraryPlan.SelectedRowGroupCount,
-            decisions,
-            _totalRowCount,
-            candidateRows,
-            result.TotalMatchedRows,
-            sw.Elapsed.TotalMilliseconds);
+            var plan = new Models.QueryPlan(
+                libraryPlan.RowGroups.Count,
+                libraryPlan.SelectedRowGroupCount,
+                libraryPlan.RowGroups.Count - libraryPlan.SelectedRowGroupCount,
+                decisions,
+                _totalRowCount,
+                candidateRows,
+                result.TotalMatchedRows,
+                sw.Elapsed.TotalMilliseconds);
 
-        var pagedRows = result.Rows
-            .Select(dict => columns.Select(c => FormatValue(dict.TryGetValue(c, out var v) ? v : null)).ToArray())
-            .ToArray();
+            var pagedRows = result.Rows
+                .Select(dict => columns.Select(c => FormatValue(dict.TryGetValue(c, out var v) ? v : null)).ToArray())
+                .ToArray();
 
-        var data = new DataPage(columns, dataTypes, pagedRows, request.Offset, request.Limit, result.TotalMatchedRows);
-        return new QueryResult(plan, data);
+            var data = new DataPage(columns, dataTypes, pagedRows, request.Offset, request.Limit, result.TotalMatchedRows);
+            return new QueryResult(plan, data);
+        }
+        finally
+        {
+            _readerLock.Release();
+        }
     }
 
     public async Task<Models.QueryPlan> GetQueryPlanAsync(QueryPredicate[] predicates)
     {
         EnsureOpen();
-        var sw = Stopwatch.StartNew();
+        await _readerLock.WaitAsync();
+        try
+        {
+            var sw = Stopwatch.StartNew();
 
-        var dynamicPredicates = predicates
-            .Select(p => new DynamicPredicate(p.Column, p.Operator, p.Value, p.Value2, p.MaxEdits, p.PrefixLength, p.Transpositions))
-            .ToArray();
+            var dynamicPredicates = predicates
+                .Select(p => new DynamicPredicate(p.Column, p.Operator, p.Value, p.Value2, p.MaxEdits, p.PrefixLength, p.Transpositions))
+                .ToArray();
 
-        var query = DynamicParquetQuery.FromReader(_reader!, _currentFilePath);
-        if (dynamicPredicates.Length > 0)
-            query = query.Where(dynamicPredicates);
+            var query = DynamicParquetQuery.FromReader(_reader!, _currentFilePath);
+            if (dynamicPredicates.Length > 0)
+                query = query.Where(dynamicPredicates);
 
-        var libraryPlan = await query.PlanAsync();
-        sw.Stop();
+            var libraryPlan = await query.PlanAsync();
+            sw.Stop();
 
-        var hasResidualOnly = libraryPlan.PushdownPredicates.Count == 0 && libraryPlan.ResidualPredicates.Count > 0;
-        var residualNote = hasResidualOnly
-            ? $"Residual filter: {string.Join(", ", libraryPlan.ResidualPredicates)} — all row groups scanned."
-            : null;
+            var hasResidualOnly = libraryPlan.PushdownPredicates.Count == 0 && libraryPlan.ResidualPredicates.Count > 0;
+            var residualNote = hasResidualOnly
+                ? $"Residual filter: {string.Join(", ", libraryPlan.ResidualPredicates)} — all row groups scanned."
+                : null;
 
-        var decisions = libraryPlan.RowGroups
-            .Select(rg => new RowGroupDecision(
-                rg.Index,
-                rg.ShouldRead,
-                FormatRowGroupReason(rg, residualNote),
-                rg.RowCount))
-            .ToArray();
+            var decisions = libraryPlan.RowGroups
+                .Select(rg => new RowGroupDecision(
+                    rg.Index,
+                    rg.ShouldRead,
+                    FormatRowGroupReason(rg, residualNote),
+                    rg.RowCount))
+                .ToArray();
 
-        var candidateRows = libraryPlan.RowGroups
-            .Where(rg => rg.ShouldRead)
-            .Sum(rg => rg.CandidateRowCountUpperBound);
+            var candidateRows = libraryPlan.RowGroups
+                .Where(rg => rg.ShouldRead)
+                .Sum(rg => rg.CandidateRowCountUpperBound);
 
-        return new Models.QueryPlan(
-            libraryPlan.RowGroups.Count,
-            libraryPlan.SelectedRowGroupCount,
-            libraryPlan.RowGroups.Count - libraryPlan.SelectedRowGroupCount,
-            decisions,
-            _totalRowCount,
-            candidateRows,
-            -1,
-            sw.Elapsed.TotalMilliseconds);
+            return new Models.QueryPlan(
+                libraryPlan.RowGroups.Count,
+                libraryPlan.SelectedRowGroupCount,
+                libraryPlan.RowGroups.Count - libraryPlan.SelectedRowGroupCount,
+                decisions,
+                _totalRowCount,
+                candidateRows,
+                -1,
+                sw.Elapsed.TotalMilliseconds);
+        }
+        finally
+        {
+            _readerLock.Release();
+        }
     }
 
     public IndicesInfo GetIndices()
@@ -785,6 +814,7 @@ public sealed class ParquetService : IDisposable
         _reader?.Dispose();
         _reader = null;
         _indexEntryCache = null;
+        _readerLock.Dispose();
     }
 
     // --- Footer index payload parsing for stats ---
