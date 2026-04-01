@@ -67,7 +67,22 @@ public sealed record ColumnIndexInfo(
     string ColumnPath,
     string IndexType,
     string Description,
-    string[] AcceleratedOperations);
+    string[] AcceleratedOperations,
+    IndexStats? Stats = null);
+
+public sealed record IndexStats(
+    long PayloadBytes,
+    int? TermCount = null,
+    int? DistinctValueCount = null,
+    IndexEntry[]? Entries = null);
+
+/// <summary>
+/// A single browsable entry in a footer index: a key (term, value, or bucket id)
+/// mapped to the row group indices where it appears.
+/// </summary>
+public sealed record IndexEntry(
+    string Key,
+    int[] RowGroups);
 
 public sealed record BuiltinColumnInfo(
     string ColumnPath,

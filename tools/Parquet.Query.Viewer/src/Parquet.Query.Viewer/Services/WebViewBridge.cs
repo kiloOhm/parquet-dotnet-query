@@ -63,7 +63,7 @@ public sealed class WebViewBridge
             "getIndices" => HandleGetIndices(),
             "getData" => await HandleGetDataAsync(request.Params),
             "executeQuery" => await HandleExecuteQueryAsync(request.Params),
-            "getQueryPlan" => HandleGetQueryPlan(request.Params),
+            "getQueryPlan" => await HandleGetQueryPlanAsync(request.Params),
             _ => throw new InvalidOperationException($"Unknown method: {request.Method}")
         };
     }
@@ -179,13 +179,13 @@ public sealed class WebViewBridge
         return await _parquetService.ExecuteQueryAsync(request);
     }
 
-    private object? HandleGetQueryPlan(JsonElement? param)
+    private async Task<object?> HandleGetQueryPlanAsync(JsonElement? param)
     {
         var predicates = param?.TryGetProperty("predicates", out var p) == true
             ? JsonSerializer.Deserialize<QueryPredicate[]>(p.GetRawText(), s_jsonOptions) ?? []
             : [];
 
-        return _parquetService.GetQueryPlan(predicates);
+        return await _parquetService.GetQueryPlanAsync(predicates);
     }
 
     private static string SerializeResponse(string id, object? result)

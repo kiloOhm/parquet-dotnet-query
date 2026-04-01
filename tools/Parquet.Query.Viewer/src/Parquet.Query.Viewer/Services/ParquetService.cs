@@ -1,8 +1,11 @@
 using System.Diagnostics;
+using System.IO.Compression;
+using System.Text.Json;
 using Parquet;
 using Parquet.Data;
 using Parquet.Meta;
 using Parquet.Schema;
+using Parquet.Query.Dynamic;
 using Parquet.Query.Viewer.Models;
 
 namespace Parquet.Query.Viewer.Services;
@@ -362,118 +365,95 @@ public sealed class ParquetService : IDisposable
     {
         EnsureOpen();
         var sw = Stopwatch.StartNew();
-        var evaluator = new PredicateEvaluator();
         var dataFields = _reader!.Schema.GetDataFields();
-
-        var decisions = new List<RowGroupDecision>();
-        long candidateRows = 0;
-
-        for (int rg = 0; rg < _reader.RowGroupCount; rg++)
-        {
-            using var rgReader = _reader.OpenRowGroupReader(rg);
-            var rowCount = _rowGroupRowCounts![rg];
-            var (shouldRead, reason) = evaluator.EvaluateRowGroup(
-                _currentFilePath!,
-                _reader.CustomMetadata,
-                rg,
-                rgReader,
-                dataFields,
-                request.Predicates);
-
-            if (shouldRead) candidateRows += rowCount;
-            decisions.Add(new RowGroupDecision(rg, shouldRead, reason, rowCount));
-        }
-
         var columns = dataFields.Select(f => f.Name).ToArray();
         var dataTypes = dataFields.Select(f => f.ClrType.Name).ToArray();
-        var allMatchedRows = new List<object?[]>();
 
-        for (int rg = 0; rg < _reader.RowGroupCount; rg++)
-        {
-            if (!decisions[rg].ShouldRead) continue;
+        var dynamicPredicates = request.Predicates
+            .Select(p => new DynamicPredicate(p.Column, p.Operator, p.Value, p.Value2, p.MaxEdits, p.PrefixLength, p.Transpositions))
+            .ToArray();
 
-            using var rgReader = _reader.OpenRowGroupReader(rg);
-            var columnArrays = new Dictionary<string, Array>();
-            foreach (var field in dataFields)
-            {
-                if (rgReader.ColumnExists(field))
-                {
-                    var col = await rgReader.ReadColumnAsync(field);
-                    columnArrays[field.Name] = col.Data;
-                }
-            }
+        var query = DynamicParquetQuery.FromReader(_reader, _currentFilePath);
+        if (dynamicPredicates.Length > 0)
+            query = query.Where(dynamicPredicates);
 
-            var rgRowCount = (int)_rowGroupRowCounts![rg];
-            for (int i = 0; i < rgRowCount; i++)
-            {
-                var rowValues = new Dictionary<string, object?>();
-                for (int c = 0; c < dataFields.Length; c++)
-                {
-                    if (columnArrays.TryGetValue(dataFields[c].Name, out var arr) && i < arr.Length)
-                        rowValues[dataFields[c].Name] = arr.GetValue(i);
-                    else
-                        rowValues[dataFields[c].Name] = null;
-                }
-
-                if (evaluator.MatchesAllPredicates(rowValues, dataFields, request.Predicates))
-                {
-                    var row = new object?[dataFields.Length];
-                    for (int c = 0; c < dataFields.Length; c++)
-                        row[c] = FormatValue(rowValues[dataFields[c].Name]);
-                    allMatchedRows.Add(row);
-                }
-            }
-        }
-
+        var result = await query.ExecuteAsync(request.Offset, request.Limit);
         sw.Stop();
 
-        var pagedRows = allMatchedRows.Skip(request.Offset).Take(request.Limit).ToArray();
+        var libraryPlan = result.Plan;
+        var hasResidualOnly = libraryPlan.PushdownPredicates.Count == 0 && libraryPlan.ResidualPredicates.Count > 0;
+        var residualNote = hasResidualOnly
+            ? $"Residual filter: {string.Join(", ", libraryPlan.ResidualPredicates)} — all row groups scanned."
+            : null;
 
-        var plan = new QueryPlan(
-            _reader.RowGroupCount,
-            decisions.Count(d => d.ShouldRead),
-            decisions.Count(d => !d.ShouldRead),
-            decisions.ToArray(),
+        var decisions = libraryPlan.RowGroups
+            .Select(rg => new RowGroupDecision(
+                rg.Index,
+                rg.ShouldRead,
+                FormatRowGroupReason(rg, residualNote),
+                rg.RowCount))
+            .ToArray();
+
+        var candidateRows = libraryPlan.RowGroups
+            .Where(rg => rg.ShouldRead)
+            .Sum(rg => rg.CandidateRowCountUpperBound);
+
+        var plan = new Models.QueryPlan(
+            libraryPlan.RowGroups.Count,
+            libraryPlan.SelectedRowGroupCount,
+            libraryPlan.RowGroups.Count - libraryPlan.SelectedRowGroupCount,
+            decisions,
             _totalRowCount,
             candidateRows,
-            allMatchedRows.Count,
+            result.TotalMatchedRows,
             sw.Elapsed.TotalMilliseconds);
 
-        var data = new DataPage(columns, dataTypes, pagedRows, request.Offset, request.Limit, allMatchedRows.Count);
+        var pagedRows = result.Rows
+            .Select(dict => columns.Select(c => FormatValue(dict.TryGetValue(c, out var v) ? v : null)).ToArray())
+            .ToArray();
+
+        var data = new DataPage(columns, dataTypes, pagedRows, request.Offset, request.Limit, result.TotalMatchedRows);
         return new QueryResult(plan, data);
     }
 
-    public QueryPlan GetQueryPlan(QueryPredicate[] predicates)
+    public async Task<Models.QueryPlan> GetQueryPlanAsync(QueryPredicate[] predicates)
     {
         EnsureOpen();
         var sw = Stopwatch.StartNew();
-        var evaluator = new PredicateEvaluator();
-        var dataFields = _reader!.Schema.GetDataFields();
-        var decisions = new List<RowGroupDecision>();
-        long candidateRows = 0;
 
-        for (int rg = 0; rg < _reader.RowGroupCount; rg++)
-        {
-            using var rgReader = _reader.OpenRowGroupReader(rg);
-            var rowCount = _rowGroupRowCounts![rg];
-            var (shouldRead, reason) = evaluator.EvaluateRowGroup(
-                _currentFilePath!,
-                _reader.CustomMetadata,
-                rg,
-                rgReader,
-                dataFields,
-                predicates);
+        var dynamicPredicates = predicates
+            .Select(p => new DynamicPredicate(p.Column, p.Operator, p.Value, p.Value2, p.MaxEdits, p.PrefixLength, p.Transpositions))
+            .ToArray();
 
-            if (shouldRead) candidateRows += rowCount;
-            decisions.Add(new RowGroupDecision(rg, shouldRead, reason, rowCount));
-        }
+        var query = DynamicParquetQuery.FromReader(_reader!, _currentFilePath);
+        if (dynamicPredicates.Length > 0)
+            query = query.Where(dynamicPredicates);
 
+        var libraryPlan = await query.PlanAsync();
         sw.Stop();
-        return new QueryPlan(
-            _reader.RowGroupCount,
-            decisions.Count(d => d.ShouldRead),
-            decisions.Count(d => !d.ShouldRead),
-            decisions.ToArray(),
+
+        var hasResidualOnly = libraryPlan.PushdownPredicates.Count == 0 && libraryPlan.ResidualPredicates.Count > 0;
+        var residualNote = hasResidualOnly
+            ? $"Residual filter: {string.Join(", ", libraryPlan.ResidualPredicates)} — all row groups scanned."
+            : null;
+
+        var decisions = libraryPlan.RowGroups
+            .Select(rg => new RowGroupDecision(
+                rg.Index,
+                rg.ShouldRead,
+                FormatRowGroupReason(rg, residualNote),
+                rg.RowCount))
+            .ToArray();
+
+        var candidateRows = libraryPlan.RowGroups
+            .Where(rg => rg.ShouldRead)
+            .Sum(rg => rg.CandidateRowCountUpperBound);
+
+        return new Models.QueryPlan(
+            libraryPlan.RowGroups.Count,
+            libraryPlan.SelectedRowGroupCount,
+            libraryPlan.RowGroups.Count - libraryPlan.SelectedRowGroupCount,
+            decisions,
             _totalRowCount,
             candidateRows,
             -1,
@@ -489,28 +469,26 @@ public sealed class ParquetService : IDisposable
         var metadata = _reader!.CustomMetadata;
         if (metadata is not null)
         {
+            var rgCount = _reader!.RowGroupCount;
             foreach (var kv in metadata)
             {
                 if (kv.Key.StartsWith("parquet.query.index.bitmap.v1/"))
                 {
                     var col = Uri.UnescapeDataString(kv.Key["parquet.query.index.bitmap.v1/".Length..]);
+                    var stats = TryParseBitmapStats(kv.Value, rgCount);
                     customIndices.Add(new ColumnIndexInfo(col, "Bitmap",
                         "Low-cardinality equality index. Stores a bitmap of which row groups contain each distinct value. Best for columns with ~256 or fewer distinct values.",
-                        ["= (equality)", "!= (inequality)"]));
-                }
-                else if (kv.Key.StartsWith("parquet.query.index.hash.v1/"))
-                {
-                    var col = Uri.UnescapeDataString(kv.Key["parquet.query.index.hash.v1/".Length..]);
-                    customIndices.Add(new ColumnIndexInfo(col, "Hash",
-                        "Hash-bucket index using FNV-1a. Maps values to hash buckets to prune row groups on equality lookups. Works for high-cardinality columns.",
-                        ["= (equality)"]));
+                        ["= (equality)", "!= (inequality)"],
+                        stats));
                 }
                 else if (kv.Key.StartsWith("parquet.query.lucene.v1/"))
                 {
                     var col = Uri.UnescapeDataString(kv.Key["parquet.query.lucene.v1/".Length..]);
+                    var stats = TryParseLuceneStats(kv.Value, rgCount);
                     customIndices.Add(new ColumnIndexInfo(col, "Lucene",
                         "Full-text search index with tokenization and optional fuzzy matching (Levenshtein distance 0-2). Prunes row groups by term presence.",
-                        ["CONTAINS (term search)", "fuzzy matching"]));
+                        ["LuceneMatch (term search)", "LuceneFuzzy (fuzzy matching)"],
+                        stats));
                 }
             }
         }
@@ -746,6 +724,17 @@ public sealed class ParquetService : IDisposable
         }
     }
 
+    private static string FormatRowGroupReason(Parquet.Query.Planning.RowGroupPlan rg, string? residualNote)
+    {
+        if (rg.Decisions.Count > 0)
+            return string.Join(" | ", rg.Decisions.Select(d => $"{d.Predicate}: {d.Reason}"));
+
+        if (residualNote is not null)
+            return residualNote;
+
+        return rg.ShouldRead ? "No predicates — read all row groups." : "Ruled out by metadata.";
+    }
+
     private static object? FormatValue(object? value)
     {
         return value switch
@@ -769,5 +758,104 @@ public sealed class ParquetService : IDisposable
     {
         _reader?.Dispose();
         _reader = null;
+    }
+
+    // --- Footer index payload parsing for stats ---
+
+    private static readonly JsonSerializerOptions s_jsonOptions = new(JsonSerializerDefaults.Web);
+
+    private static T? TryDeserializePayload<T>(string? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload)) return default;
+        try
+        {
+            var compressedBytes = Convert.FromBase64String(payload);
+            using var input = new MemoryStream(compressedBytes, writable: false);
+            using var compression = new BrotliStream(input, CompressionMode.Decompress);
+            using var json = new MemoryStream();
+            compression.CopyTo(json);
+            return JsonSerializer.Deserialize<T>(json.ToArray(), s_jsonOptions);
+        }
+        catch (Exception ex) when (ex is FormatException or JsonException or InvalidDataException or InvalidOperationException)
+        {
+            return default;
+        }
+    }
+
+    private static long EstimatePayloadBytes(string base64Payload)
+    {
+        // Base64 encodes 3 bytes as 4 chars; the raw compressed size is the actual storage cost
+        return (long)(base64Payload.Length * 3.0 / 4.0);
+    }
+
+    private static IndexStats? TryParseBitmapStats(string payload, int rowGroupCount)
+    {
+        var model = TryDeserializePayload<ViewerBitmapIndexModel>(payload);
+        if (model is null) return null;
+
+        var entries = model.Values?
+            .Select(v => new IndexEntry(v.Value ?? "", v.RowGroups ?? []))
+            .ToArray() ?? [];
+
+        return new IndexStats(
+            EstimatePayloadBytes(payload),
+            DistinctValueCount: model.Values?.Count ?? 0,
+            Entries: entries);
+    }
+
+    private static IndexStats? TryParseLuceneStats(string payload, int rowGroupCount)
+    {
+        var model = TryDeserializePayload<ViewerLuceneIndexModel>(payload);
+        if (model is null) return null;
+
+        // Build term → row groups mapping by inverting the per-row-group ordinal lists
+        var termRowGroups = new Dictionary<int, List<int>>();
+        if (model.RowGroups is not null)
+        {
+            for (var rgIdx = 0; rgIdx < model.RowGroups.Count; rgIdx++)
+            {
+                foreach (var ordinal in model.RowGroups[rgIdx])
+                {
+                    if (!termRowGroups.TryGetValue(ordinal, out var list))
+                    {
+                        list = [];
+                        termRowGroups[ordinal] = list;
+                    }
+                    list.Add(rgIdx);
+                }
+            }
+        }
+
+        var terms = model.Terms ?? [];
+        var entries = new IndexEntry[terms.Count];
+        for (var i = 0; i < terms.Count; i++)
+        {
+            var rgs = termRowGroups.TryGetValue(i, out var list) ? list.ToArray() : [];
+            entries[i] = new IndexEntry(terms[i], rgs);
+        }
+
+        return new IndexStats(
+            EstimatePayloadBytes(payload),
+            TermCount: terms.Count,
+            Entries: entries);
+    }
+
+    private sealed class ViewerBitmapIndexModel
+    {
+        public string ColumnPath { get; set; } = string.Empty;
+        public List<ViewerBitmapEntryModel> Values { get; set; } = [];
+    }
+
+    private sealed class ViewerBitmapEntryModel
+    {
+        public string Value { get; set; } = string.Empty;
+        public int[] RowGroups { get; set; } = [];
+    }
+
+    private sealed class ViewerLuceneIndexModel
+    {
+        public string ColumnPath { get; set; } = string.Empty;
+        public List<string> Terms { get; set; } = [];
+        public List<int[]> RowGroups { get; set; } = [];
     }
 }

@@ -71,11 +71,24 @@ export interface DataPage {
   totalRows: number
 }
 
+export interface IndexEntry {
+  key: string
+  rowGroups: number[]
+}
+
+export interface IndexStats {
+  payloadBytes: number
+  termCount?: number
+  distinctValueCount?: number
+  entries?: IndexEntry[]
+}
+
 export interface ColumnIndexInfo {
   columnPath: string
   indexType: string
   description: string
   acceleratedOperations: string[]
+  stats?: IndexStats | null
 }
 
 export interface BuiltinColumnInfo {
