@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DataPage } from '@/api/types'
-import { DataGrid } from '@/components/DataGrid'
+import { DataGrid, type DataGridHandle } from '@/components/DataGrid'
 import { useError } from '@/components/ErrorDialog'
+import { useSparseRowCache, CHUNK_SIZE } from '@/hooks/useSparseRowCache'
 import { formatNumber } from '@/lib/utils'
 import { Loader2 } from 'lucide-react'
 
-const BATCH_SIZE = 500
+const DEBOUNCE_MS = 150
 
 interface PaginatedDataGridProps {
   /** Fetch a page of data. Called on mount and as the user scrolls. */
@@ -17,70 +18,84 @@ interface PaginatedDataGridProps {
 }
 
 export function PaginatedDataGrid({ fetchPage, emptyMessage, resetKey }: PaginatedDataGridProps) {
-  // Accumulated data across all fetched batches
   const [columns, setColumns] = useState<string[]>([])
   const [dataTypes, setDataTypes] = useState<string[]>([])
-  const [rows, setRows] = useState<unknown[][]>([])
   const [totalRows, setTotalRows] = useState(0)
   const [initialLoading, setInitialLoading] = useState(false)
+  const [visibleStart, setVisibleStart] = useState(0)
+  const [visibleEnd, setVisibleEnd] = useState(0)
   const showError = useError()
-  const loadingRef = useRef(false)
-  const loadedCountRef = useRef(0)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const visibleRef = useRef({ start: 0, end: 0 })
+  const gridRef = useRef<DataGridHandle>(null)
+  const [goToInput, setGoToInput] = useState('')
 
-  // Keep ref in sync with rows length
-  loadedCountRef.current = rows.length
+  const { getRow, ensureRange, seedChunk, clear, version } = useSparseRowCache(fetchPage)
 
-  // Build a synthetic DataPage from accumulated state
-  const data: DataPage | null = columns.length > 0
-    ? { columns, dataTypes, rows, offset: 0, limit: rows.length, totalRows }
-    : null
-
-  const hasMore = rows.length < totalRows
-
-  const loadNext = useCallback(async () => {
-    if (loadingRef.current) return
-    loadingRef.current = true
-    try {
-      const page = await fetchPage(loadedCountRef.current, BATCH_SIZE)
-      setColumns(page.columns)
-      setDataTypes(page.dataTypes)
-      setRows(prev => [...prev, ...page.rows])
-      setTotalRows(page.totalRows)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      showError('Failed to fetch data', msg)
-    } finally {
-      loadingRef.current = false
-    }
-  }, [fetchPage, showError])
-
-  // Reset on key change
+  // Reset on key change: clear cache, fetch the first chunk to learn schema + totalRows
   useEffect(() => {
     if (resetKey === undefined) return
-    setRows([])
+    clear()
     setColumns([])
     setDataTypes([])
     setTotalRows(0)
-    loadingRef.current = false
+    setVisibleStart(0)
+    setVisibleEnd(0)
+    visibleRef.current = { start: 0, end: 0 }
     setInitialLoading(true)
-    fetchPage(0, BATCH_SIZE)
+
+    fetchPage(0, CHUNK_SIZE)
       .then(page => {
         setColumns(page.columns)
         setDataTypes(page.dataTypes)
-        setRows(page.rows)
         setTotalRows(page.totalRows)
+        seedChunk(0, page.rows)
       })
       .catch(err => {
         const msg = err instanceof Error ? err.message : String(err)
         showError('Failed to fetch data', msg)
       })
       .finally(() => setInitialLoading(false))
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey])
 
-  const handleLoadMore = useCallback(() => {
-    void loadNext()
-  }, [loadNext])
+  // Keep totalRows in a ref so the debounce callback always sees the latest value
+  const totalRowsRef = useRef(totalRows)
+  totalRowsRef.current = totalRows
+
+  // Stable callback — only depends on ensureRange (stable useCallback from the hook)
+  const handleVisibleRangeChange = useCallback((start: number, end: number) => {
+    // Deduplicate: skip if range hasn't actually changed
+    const prev = visibleRef.current
+    if (prev.start === start && prev.end === end) return
+    visibleRef.current = { start, end }
+    setVisibleStart(start)
+    setVisibleEnd(end)
+
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      const total = totalRowsRef.current
+      if (total === 0) return
+      const bufferedStart = Math.max(0, start - CHUNK_SIZE)
+      const bufferedEnd = Math.min(total - 1, end + CHUNK_SIZE)
+      ensureRange(bufferedStart, bufferedEnd)
+    }, DEBOUNCE_MS)
+  }, [ensureRange])
+
+  // Clean up debounce timer
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [])
+
+  const handleGoToRow = () => {
+    const parsed = parseInt(goToInput, 10)
+    if (isNaN(parsed) || parsed < 1) return
+    const clamped = Math.min(parsed, totalRows) - 1 // convert 1-based to 0-based
+    gridRef.current?.scrollToRow(clamped)
+    setGoToInput('')
+  }
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -91,22 +106,45 @@ export function PaginatedDataGrid({ fetchPage, emptyMessage, resetKey }: Paginat
             <span className="inline-flex items-center gap-1.5">
               <Loader2 className="h-3 w-3 animate-spin" /> Loading...
             </span>
-          ) : data ? (
+          ) : totalRows > 0 ? (
             <>
-              {formatNumber(rows.length)} of {formatNumber(totalRows)} rows loaded
+              Rows {formatNumber(visibleStart + 1)}&ndash;{formatNumber(Math.min(visibleEnd + 1, totalRows))} of {formatNumber(totalRows)}
             </>
           ) : (
             emptyMessage ?? 'No data'
           )}
         </div>
+        {totalRows > 0 && !initialLoading && (
+          <form
+            className="flex items-center gap-1.5"
+            onSubmit={(e) => { e.preventDefault(); handleGoToRow() }}
+          >
+            <label htmlFor="go-to-row" className="text-xs text-muted-foreground whitespace-nowrap">
+              Go to row
+            </label>
+            <input
+              id="go-to-row"
+              type="text"
+              inputMode="numeric"
+              className="h-6 w-20 rounded border border-border bg-background px-1.5 text-xs text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/50"
+              placeholder={`1–${formatNumber(totalRows)}`}
+              value={goToInput}
+              onChange={(e) => setGoToInput(e.target.value.replace(/[^\d]/g, ''))}
+            />
+          </form>
+        )}
       </div>
 
       {/* Grid */}
       <DataGrid
-        data={data}
+        ref={gridRef}
+        columns={columns}
+        dataTypes={dataTypes}
+        totalRows={totalRows}
+        getRow={getRow}
+        cacheVersion={version}
+        onVisibleRangeChange={handleVisibleRangeChange}
         emptyMessage={emptyMessage}
-        onLoadMore={handleLoadMore}
-        hasMore={hasMore}
       />
     </div>
   )
