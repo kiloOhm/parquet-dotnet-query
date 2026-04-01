@@ -16,7 +16,11 @@ type PendingRequest = {
   reject: (reason: Error) => void
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type PushHandler = (data: any) => void
+
 const pending = new Map<string, PendingRequest>()
+const pushHandlers = new Map<string, Set<PushHandler>>()
 let requestId = 0
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -39,11 +43,22 @@ if (isWebView()) {
     try {
       // PostWebMessageAsJson delivers e.data as an already-parsed JS object
       const msg = (typeof e.data === 'string' ? JSON.parse(e.data) : e.data) as {
-        id: string; result?: unknown; error?: string
+        id?: string; method?: string; data?: unknown; result?: unknown; error?: string
       }
-      const req = pending.get(msg.id)
+
+      // Push message from native (no id, has method)
+      if (msg.method && !msg.id) {
+        const handlers = pushHandlers.get(msg.method)
+        if (handlers) {
+          for (const handler of handlers) handler(msg.data)
+        }
+        return
+      }
+
+      // Response to a pending request
+      const req = msg.id ? pending.get(msg.id) : undefined
       if (!req) return
-      pending.delete(msg.id)
+      pending.delete(msg.id!)
       if (msg.error) {
         req.reject(new Error(msg.error))
       } else {
@@ -317,4 +332,14 @@ export const bridge = {
     invoke<QueryResult>('executeQuery', { predicates, offset, limit }),
   getQueryPlan: (predicates: QueryPredicate[]) =>
     invoke<QueryPlan>('getQueryPlan', { predicates }),
+  /** Subscribe to push messages from the native host. Returns an unsubscribe function. */
+  onPush: (method: string, handler: PushHandler): (() => void) => {
+    let handlers = pushHandlers.get(method)
+    if (!handlers) {
+      handlers = new Set()
+      pushHandlers.set(method, handlers)
+    }
+    handlers.add(handler)
+    return () => { handlers!.delete(handler) }
+  },
 }

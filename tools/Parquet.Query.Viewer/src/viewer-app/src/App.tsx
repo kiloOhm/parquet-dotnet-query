@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { bridge } from '@/api/bridge'
 import type { EncryptionConfig, ParquetFileInfo } from '@/api/types'
 import { useError } from '@/components/ErrorDialog'
@@ -29,6 +29,49 @@ export default function App() {
   const showError = useError()
   const [pendingEncryptedPath, setPendingEncryptedPath] = useState<string | null>(null)
   const [openError, setOpenError] = useState<string | null>(null)
+  const [dragOver, setDragOver] = useState(false)
+
+  // Listen for files dropped onto the native window
+  useEffect(() => {
+    return bridge.onPush('fileDropped', (data: { file?: ParquetFileInfo; path?: string; needsEncryption?: boolean; error?: string }) => {
+      if (data.needsEncryption && data.path) {
+        setPendingEncryptedPath(data.path)
+        setShowEncryption(true)
+        setFileInfo(null)
+        setEncryptionConfig(undefined)
+      } else if (data.error && data.path) {
+        setPendingEncryptedPath(data.path)
+        setOpenError(data.error)
+        setShowEncryption(true)
+        setFileInfo(null)
+        setEncryptionConfig(undefined)
+      } else if (data.file) {
+        setPendingEncryptedPath(null)
+        setFileInfo(data.file)
+        setShowEncryption(false)
+      }
+    })
+  }, [])
+
+  // Prevent default browser drag-drop (navigation) and track drag-over state
+  useEffect(() => {
+    let dragCounter = 0
+    const onDragEnter = (e: DragEvent) => { e.preventDefault(); dragCounter++; setDragOver(true) }
+    const onDragOver = (e: DragEvent) => { e.preventDefault() }
+    const onDragLeave = () => { dragCounter--; if (dragCounter <= 0) { dragCounter = 0; setDragOver(false) } }
+    const onDrop = (e: DragEvent) => { e.preventDefault(); dragCounter = 0; setDragOver(false) }
+
+    document.addEventListener('dragenter', onDragEnter)
+    document.addEventListener('dragover', onDragOver)
+    document.addEventListener('dragleave', onDragLeave)
+    document.addEventListener('drop', onDrop)
+    return () => {
+      document.removeEventListener('dragenter', onDragEnter)
+      document.removeEventListener('dragover', onDragOver)
+      document.removeEventListener('dragleave', onDragLeave)
+      document.removeEventListener('drop', onDrop)
+    }
+  }, [])
 
   const handlePickFile = useCallback(async () => {
     try {
@@ -202,6 +245,16 @@ export default function App() {
           </TabsContent>
         </Tabs>
       </div>
+
+      {/* Drag-and-drop overlay */}
+      {dragOver && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm border-2 border-dashed border-primary/50 pointer-events-none">
+          <div className="flex flex-col items-center gap-3 text-primary">
+            <FolderOpen className="h-12 w-12" />
+            <p className="text-lg font-medium">Drop a Parquet file to open</p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

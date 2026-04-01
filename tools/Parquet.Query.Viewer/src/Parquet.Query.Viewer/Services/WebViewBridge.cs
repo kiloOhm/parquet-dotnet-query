@@ -199,6 +199,53 @@ public sealed class WebViewBridge
         return await _parquetService.GetQueryPlanAsync(predicates);
     }
 
+    /// <summary>
+    /// Called from the native drag-drop handler when a file is dropped onto the window.
+    /// Returns a push-style JSON message (with "method" instead of "id") for PostWebMessageAsJson.
+    /// </summary>
+    public async Task<string> HandleFileDropAsync(string filePath)
+    {
+        try
+        {
+            System.Diagnostics.Debug.WriteLine($"[Bridge] fileDrop: {filePath}");
+
+            var savedEncryption = _encryptionStore.Get(filePath);
+            var isEncrypted = ParquetService.DetectEncryptedFooter(filePath);
+
+            if (savedEncryption is not null)
+            {
+                try
+                {
+                    var fileInfo = await _parquetService.OpenFileAsync(filePath, savedEncryption);
+                    return SerializePush("fileDropped", new { file = fileInfo });
+                }
+                catch
+                {
+                    _encryptionStore.Set(filePath, null);
+                }
+            }
+
+            if (isEncrypted)
+            {
+                return SerializePush("fileDropped", new { path = filePath, needsEncryption = true });
+            }
+
+            try
+            {
+                var fileInfo = await _parquetService.OpenFileAsync(filePath);
+                return SerializePush("fileDropped", new { file = fileInfo });
+            }
+            catch (Exception ex)
+            {
+                return SerializePush("fileDropped", new { path = filePath, error = ex.Message });
+            }
+        }
+        catch (Exception ex)
+        {
+            return SerializePush("fileDropped", new { error = ex.Message });
+        }
+    }
+
     private static string SerializeResponse(string id, object? result)
     {
         return JsonSerializer.Serialize(new BridgeResponse(id, result), s_jsonOptions);
@@ -207,5 +254,10 @@ public sealed class WebViewBridge
     private static string SerializeError(string id, string error)
     {
         return JsonSerializer.Serialize(new BridgeResponse(id, Error: error), s_jsonOptions);
+    }
+
+    private static string SerializePush(string method, object? data)
+    {
+        return JsonSerializer.Serialize(new { method, data }, s_jsonOptions);
     }
 }

@@ -32,6 +32,11 @@ public partial class MainPage : ContentPage
 
         nativeWebView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
+        // Enable native file drag-and-drop onto the WebView
+        nativeWebView.AllowDrop = true;
+        nativeWebView.DragOver += OnDragOver;
+        nativeWebView.Drop += OnDrop;
+
 #if DEBUG
         // Disable cache so React builds are never stale during development
         nativeWebView.CoreWebView2.Settings.IsGeneralAutofillEnabled = false;
@@ -54,6 +59,45 @@ public partial class MainPage : ContentPage
             MainThread.BeginInvokeOnMainThread(() =>
             {
                 sender.PostWebMessageAsJson(response);
+            });
+        });
+    }
+
+    private static readonly string[] s_parquetExtensions = [".parquet", ".par"];
+
+    private void OnDragOver(object sender, Microsoft.UI.Xaml.DragEventArgs e)
+    {
+        if (e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems))
+        {
+            e.AcceptedOperation = Windows.ApplicationModel.DataTransfer.DataPackageOperation.Copy;
+            e.DragUIOverride.Caption = "Open in Parquet Viewer";
+            e.DragUIOverride.IsCaptionVisible = true;
+            e.DragUIOverride.IsGlyphVisible = true;
+        }
+    }
+
+    private async void OnDrop(object sender, Microsoft.UI.Xaml.DragEventArgs e)
+    {
+        if (!e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems))
+            return;
+
+        var items = await e.DataView.GetStorageItemsAsync();
+        var file = items
+            .OfType<Windows.Storage.StorageFile>()
+            .FirstOrDefault(f => s_parquetExtensions.Contains(f.FileType, StringComparer.OrdinalIgnoreCase));
+
+        if (file is null || _nativeWebView is null)
+            return;
+
+        var filePath = file.Path;
+        System.Diagnostics.Debug.WriteLine($"[MainPage] File dropped: {filePath}");
+
+        _ = Task.Run(async () =>
+        {
+            var pushJson = await _bridge.HandleFileDropAsync(filePath);
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                _nativeWebView.CoreWebView2.PostWebMessageAsJson(pushJson);
             });
         });
     }
