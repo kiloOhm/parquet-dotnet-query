@@ -219,11 +219,11 @@ export default function App() {
               <TabsTrigger value="metadata" className="text-xs gap-1.5">
                 <FileText className="h-3.5 w-3.5" /> Metadata
               </TabsTrigger>
-              <TabsTrigger value="query" className="text-xs gap-1.5">
-                <Search className="h-3.5 w-3.5" /> Query
-              </TabsTrigger>
               <TabsTrigger value="indices" className="text-xs gap-1.5">
                 <Hash className="h-3.5 w-3.5" /> Indices
+              </TabsTrigger>
+              <TabsTrigger value="query" className="text-xs gap-1.5">
+                <Search className="h-3.5 w-3.5" /> Query
               </TabsTrigger>
             </TabsList>
           </div>
@@ -236,12 +236,12 @@ export default function App() {
             <MetadataViewer fileInfo={fileInfo} />
           </TabsContent>
 
-          <TabsContent value="query" className="flex-1 overflow-hidden">
-            <QueryEditor fileInfo={fileInfo} />
-          </TabsContent>
-
           <TabsContent value="indices" className="flex-1 overflow-hidden">
             <IndicesViewer fileInfo={fileInfo} />
+          </TabsContent>
+
+          <TabsContent value="query" className="flex-1 overflow-hidden" keepMounted>
+            <QueryEditor fileInfo={fileInfo} />
           </TabsContent>
         </Tabs>
       </div>
