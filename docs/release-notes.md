@@ -4,6 +4,11 @@
 
 - Add `DynamicParquetQuery` API for schema-agnostic query execution over already-open `ParquetReader` instances. Supports the full pushdown planning pipeline — including footer index planners for Lucene, bitmap, and bloom filter pruning — without requiring a compile-time row type.
 
+### Writing Extensions
+
+- Auto-configure bloom filter metadata for columns annotated with `BloomFilter` index descriptors. `ParquetWritePlan.CreateSerializerOptions` now populates `BloomFilterOptionsByColumn` automatically so writers no longer need to set bloom filter options manually.
+- Deep-clone `ParquetOptions` in `SerializerOptionsSnapshot` to prevent mutation of shared state when bloom filter columns are injected.
+
 ### Indexing Extensions
 
 - Remove hash footer indexes (`FooterHashIndexingStrategy`, `[ParquetFooterHashIndex]`) in favor of built-in Parquet bloom filters, which provide the same equality-pruning capability with better space efficiency and no custom metadata overhead.
@@ -13,6 +18,10 @@
 
 - Wire query execution and plan generation to the library's `DynamicParquetQuery` pipeline, replacing hand-rolled `PredicateEvaluator`. Footer index planners (Lucene, bitmap) now participate in row group pruning from the viewer.
 - Add browsable index data to the Indices tab: bitmap indexes show all distinct values with row group presence, Lucene indexes show all indexed terms with inverted row group mappings. Entries are filterable and scrollable with colored row group dots.
+- Replace classic pagination with scrubber-style virtual scroll: the scrollbar reflects the full row count from the start, and data chunks are fetched on demand as the user scrolls (debounced 150 ms). A sparse LRU cache holds up to ~100 K rows in memory with shimmer placeholders for chunks still loading.
+- Add "Go to row" input in the status bar to jump directly to any row by number.
+- Fix concurrent read crashes on encrypted Parquet files by serializing reader access with a `SemaphoreSlim`. Multiple parallel chunk requests no longer corrupt the shared file stream position.
+- Fix table overflow / missing scrollbar caused by `TabsContent` not being a flex column container.
 
 # 0.1.0-preview.5
 
