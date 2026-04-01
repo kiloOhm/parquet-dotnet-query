@@ -3,6 +3,7 @@ using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Parquet;
+using Parquet.Query.Dynamic;
 using Parquet.Query.Expressions;
 using Parquet.Query.Internal;
 using Parquet.Query.Planning;
@@ -54,6 +55,16 @@ public static class ParquetQuery
         ParquetOptions? parquetOptions = null)
         where T : class, new()
         => ParquetQuery<T, T>.FromFiles(Directory.EnumerateFiles(directoryPath, searchPattern, searchOption), parquetOptions);
+
+    /// <summary>
+    /// Creates a dynamic (non-generic) query over an already-open parquet reader.
+    /// Use this when the row type is not known at compile time.
+    /// </summary>
+    /// <param name="reader">An open parquet reader. The caller retains ownership.</param>
+    /// <param name="filePath">The file path associated with the reader.</param>
+    /// <returns>A dynamic query with no predicates.</returns>
+    public static DynamicParquetQuery FromReader(ParquetReader reader, string? filePath = null)
+        => DynamicParquetQuery.FromReader(reader, filePath);
 }
 
 /// <summary>
