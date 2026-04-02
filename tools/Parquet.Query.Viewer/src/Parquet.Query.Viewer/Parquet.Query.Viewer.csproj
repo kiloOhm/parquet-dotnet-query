@@ -10,6 +10,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <ApplicationIcon>icon.ico</ApplicationIcon>
     <ApplicationTitle>Parquet Viewer</ApplicationTitle>
     <ApplicationId>com.parquetquery.viewer</ApplicationId>
     <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
