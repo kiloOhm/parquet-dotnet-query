@@ -21,7 +21,7 @@ public partial class App : Application
         if (args.Length > 1)
         {
             var candidate = args[1];
-            if (File.Exists(candidate) &&
+            if (System.IO.File.Exists(candidate) &&
                 s_parquetExtensions.Contains(Path.GetExtension(candidate), StringComparer.OrdinalIgnoreCase))
             {
                 StartupFilePath = candidate;

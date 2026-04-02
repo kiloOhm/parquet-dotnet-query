@@ -28,7 +28,7 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Test
-        run: dotnet test tests/Parquet.Query.Tests/Parquet.Query.Tests.csproj -c release
+        run: dotnet test tests/Parquet.Query.Tests/Parquet.Query.Tests.csproj -c Release -f net8.0
 
   benchmark:
     name: "Benchmarks - Linux x64"
@@ -104,7 +104,7 @@ jobs:
       - name: Build library
         run: |
           for csproj in src/*/*.csproj; do
-            dotnet build "$csproj" -c release /p:Version=$VERSION /p:FileVersion=$VERSION_NO_SUFFIX.0 /p:AssemblyVersion=$VERSION_MAJOR.0
+            dotnet build "$csproj" -c Release /p:Version=$VERSION /p:FileVersion=$VERSION_NO_SUFFIX.0 /p:AssemblyVersion=$VERSION_MAJOR.0
           done
 
       - name: Collect artifacts
