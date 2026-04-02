@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TargetFrameworks>net10.0-windows10.0.19041.0</TargetFrameworks>
     <OutputType>Exe</OutputType>
+    <AssemblyName>ParquetViewer</AssemblyName>
     <UseMaui>true</UseMaui>
     <SingleProject>true</SingleProject>
     <WindowsPackageType>None</WindowsPackageType>

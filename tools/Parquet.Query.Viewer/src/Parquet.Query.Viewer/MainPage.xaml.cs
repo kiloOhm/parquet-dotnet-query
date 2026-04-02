@@ -18,36 +18,47 @@ public partial class MainPage : ContentPage
 
     private async void OnHandlerChanged(object? sender, EventArgs e)
     {
-        if (webView.Handler?.PlatformView is not Microsoft.UI.Xaml.Controls.WebView2 nativeWebView)
-            return;
+        try
+        {
+            if (webView.Handler?.PlatformView is not Microsoft.UI.Xaml.Controls.WebView2 nativeWebView)
+                return;
 
-        _nativeWebView = nativeWebView;
-        await nativeWebView.EnsureCoreWebView2Async();
+            CrashLog.Write("WebView2 handler obtained, initializing CoreWebView2...");
+            _nativeWebView = nativeWebView;
+            await nativeWebView.EnsureCoreWebView2Async();
+            CrashLog.Write("CoreWebView2 ready");
 
-        var wwwrootPath = Path.Combine(AppContext.BaseDirectory, "wwwroot");
-        nativeWebView.CoreWebView2.SetVirtualHostNameToFolderMapping(
-            "parquet-viewer.local",
-            wwwrootPath,
-            Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind.Allow);
+            var wwwrootPath = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+            CrashLog.Write($"Mapping virtual host to: {wwwrootPath} (exists={Directory.Exists(wwwrootPath)})");
+            nativeWebView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                "parquet-viewer.local",
+                wwwrootPath,
+                Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind.Allow);
 
-        nativeWebView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+            nativeWebView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
-        // Open the file passed via command-line ("Open with") once React is ready
-        nativeWebView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
+            // Open the file passed via command-line ("Open with") once React is ready
+            nativeWebView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
 
-        // Enable native file drag-and-drop onto the WebView
-        nativeWebView.AllowDrop = true;
-        nativeWebView.DragOver += OnDragOver;
-        nativeWebView.Drop += OnDrop;
+            // Enable native file drag-and-drop onto the WebView
+            nativeWebView.AllowDrop = true;
+            nativeWebView.DragOver += OnDragOver;
+            nativeWebView.Drop += OnDrop;
 
 #if DEBUG
-        // Disable cache so React builds are never stale during development
-        nativeWebView.CoreWebView2.Settings.IsGeneralAutofillEnabled = false;
-        await nativeWebView.CoreWebView2.Profile.ClearBrowsingDataAsync();
-        nativeWebView.CoreWebView2.OpenDevToolsWindow();
+            // Disable cache so React builds are never stale during development
+            nativeWebView.CoreWebView2.Settings.IsGeneralAutofillEnabled = false;
+            await nativeWebView.CoreWebView2.Profile.ClearBrowsingDataAsync();
+            nativeWebView.CoreWebView2.OpenDevToolsWindow();
 #endif
 
-        nativeWebView.Source = new Uri("https://parquet-viewer.local/index.html");
+            nativeWebView.Source = new Uri("https://parquet-viewer.local/index.html");
+            CrashLog.Write("Navigation started");
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex);
+        }
     }
 
     private void OnNavigationCompleted(
