@@ -24,7 +24,7 @@ public sealed class EncryptionStore
         var appData = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ParquetViewer");
-        Directory.CreateDirectory(appData);
+        System.IO.Directory.CreateDirectory(appData);
         _storePath = Path.Combine(appData, "encryption.json");
         _entries = Load();
     }

@@ -13,7 +13,7 @@ internal static class CrashLog
         try
         {
             var entry = $"[{DateTime.UtcNow:O}] {ex}";
-            File.AppendAllText(s_logPath, entry + Environment.NewLine + Environment.NewLine);
+            System.IO.File.AppendAllText(s_logPath, entry + Environment.NewLine + Environment.NewLine);
         }
         catch
         {
@@ -26,7 +26,7 @@ internal static class CrashLog
         try
         {
             var entry = $"[{DateTime.UtcNow:O}] {message}";
-            File.AppendAllText(s_logPath, entry + Environment.NewLine);
+            System.IO.File.AppendAllText(s_logPath, entry + Environment.NewLine);
         }
         catch
         {

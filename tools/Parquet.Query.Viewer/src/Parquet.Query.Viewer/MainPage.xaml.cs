@@ -29,7 +29,7 @@ public partial class MainPage : ContentPage
             CrashLog.Write("CoreWebView2 ready");
 
             var wwwrootPath = Path.Combine(AppContext.BaseDirectory, "wwwroot");
-            CrashLog.Write($"Mapping virtual host to: {wwwrootPath} (exists={Directory.Exists(wwwrootPath)})");
+            CrashLog.Write($"Mapping virtual host to: {wwwrootPath} (exists={System.IO.Directory.Exists(wwwrootPath)})");
             nativeWebView.CoreWebView2.SetVirtualHostNameToFolderMapping(
                 "parquet-viewer.local",
                 wwwrootPath,

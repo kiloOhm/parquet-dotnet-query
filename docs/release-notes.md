@@ -22,6 +22,15 @@
 - Add "Go to row" input in the status bar to jump directly to any row by number.
 - Fix concurrent read crashes on encrypted Parquet files by serializing reader access with a `SemaphoreSlim`. Multiple parallel chunk requests no longer corrupt the shared file stream position.
 - Fix table overflow / missing scrollbar caused by `TabsContent` not being a flex column container.
+- Support Windows "Open with" shell association: the app accepts a file path as a command-line argument and opens it automatically on launch.
+- Add crash logging to `ParquetViewer.log` next to the executable for diagnosing startup and runtime failures.
+- Rename output executable from `Parquet.Query.Viewer.exe` to `ParquetViewer.exe`.
+
+### CI
+
+- Add MAUI viewer build job (Windows x64) to GitHub Actions with React pre-build and artifact upload.
+- Publish both framework-dependent and self-contained portable viewer zips attached to GitHub releases.
+- Create GitHub releases for preview versions (marked as prerelease), not only stable releases.
 
 # 0.1.0-preview.5
 
