@@ -152,6 +152,7 @@ jobs:
       contents: write
     needs:
       - release
+      - viewer
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Download library binaries
@@ -160,18 +161,28 @@ jobs:
           name: bin
           path: bin
 
+      - name: Download viewer
+        uses: actions/download-artifact@v4
+        with:
+          name: viewer-win-x64
+          path: viewer-win-x64
+
       - name: Restore version from file
         run: echo "VERSION=$(cat bin/version.txt | xargs)" >> "$GITHUB_ENV"
 
+      - name: Package viewer
+        run: cd viewer-win-x64 && zip -r ../bin/ParquetViewer-win-x64.zip .
+
       - name: View artifacts to be used
-        run: ls -R
+        run: ls -R bin/
 
       - name: Create release
         uses: softprops/action-gh-release@v2
-        if: ${{ !contains(env.VERSION, '-') }}
         with:
           tag_name: ${{ env.VERSION }}
           name: ${{ env.VERSION }}
+          prerelease: ${{ contains(env.VERSION, '-') }}
           files: |
             bin/*.nupkg
+            bin/ParquetViewer-win-x64.zip
           body_path: bin/release-notes.md
