@@ -13,16 +13,19 @@ internal static class PushdownPredicateFactory
         object? value)
     {
         var path = ColumnPathResolver.FromLambda(selector);
-        var rowPredicate = CompileComparison<T>(selector, @operator, value);
-        var valueType = value?.GetType() ?? selector.Body.Type;
+        var columnType = ColumnPathResolver.StripConvert(selector.Body).Type;
+        var nonNullableColumnType = Nullable.GetUnderlyingType(columnType) ?? columnType;
+        var coercedValue = ConvertValue(value, nonNullableColumnType);
+        var rowPredicate = CompileComparison<T>(selector, @operator, coercedValue);
+        var valueType = coercedValue?.GetType() ?? nonNullableColumnType;
 
         return new ComparisonPushdownPredicate<T>(
             path.MemberPath,
             path.PhysicalPath,
             @operator,
-            value,
+            coercedValue,
             valueType,
-            $"{path.MemberPath} {ToSymbol(@operator)} {FormatValue(value)}",
+            $"{path.MemberPath} {ToSymbol(@operator)} {FormatValue(coercedValue)}",
             rowPredicate);
     }
 

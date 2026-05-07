@@ -1,3 +1,9 @@
+# 0.1.0-preview.6.1
+
+### Core Query
+
+- Fix `Where(row => row.IntCol == (SomeEnum)x)` (and other narrowing/widening casts on closed-over values) silently dropping all rows when the column has a bloom filter. `PredicatePushdownExtractor` strips the `Convert` node when reading the closed value, so the predicate stored an `enum` against an `int` column; the bloom-filter lookup then hashed the wrong CLR type and ruled the row group out. `PushdownPredicateFactory.CreateComparison` now coerces the constant to the column's CLR type (via `ConvertValue` against `selector.Body` after `StripConvert`) before the predicate is built, so bloom, statistics, and row-level evaluation all see the column-typed value.
+
 # 0.1.0-preview.6
 
 ### Core Query

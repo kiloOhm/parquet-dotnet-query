@@ -103,10 +103,32 @@ public sealed class PredicatePushdownExtractorTests
         Assert.Contains(startsWithSplit.Diagnostics, diagnostic => diagnostic.Reason.Contains("StringComparison.Ordinal", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void Extract_coerces_enum_cast_to_column_type()
+    {
+        var industry = TestIndustry.Metalworking;
+        Expression<Func<TestRow, bool>> predicate = row => row.Age == (int)industry;
+
+        var split = PredicatePushdownExtractor.Extract(predicate);
+
+        var comparison = Assert.IsType<ComparisonPushdownPredicate<TestRow>>(Assert.Single(split.PushdownFilter.Predicates));
+        Assert.Equal(ComparisonOperator.Equal, comparison.Operator);
+        Assert.Equal(typeof(int), comparison.ValueType);
+        Assert.IsType<int>(comparison.Value);
+        Assert.Equal((int)TestIndustry.Metalworking, comparison.Value);
+    }
+
     private static bool IsEligible(TestRow row) => row.Country.StartsWith("D", StringComparison.Ordinal) && row.Age % 2 == 0;
 
     private sealed class TestCriteria
     {
         public string Country { get; init; } = string.Empty;
+    }
+
+    private enum TestIndustry
+    {
+        Undefined = 0,
+        ChemistryGalvanotechnics = 1,
+        Metalworking = 24,
     }
 }
