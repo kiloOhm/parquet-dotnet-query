@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { bridge } from '@/api/bridge'
 import type { ParquetFileInfo, QueryPlan, QueryPredicate } from '@/api/types'
+import { useError } from '@/components/ErrorDialog'
 import { PaginatedDataGrid } from '@/components/PaginatedDataGrid'
 import { buildCodeSnippet } from '@/components/query-language'
 import { Badge } from '@/components/ui/badge'
@@ -20,6 +21,8 @@ import { formatMs, formatNumber } from '@/lib/utils'
 import {
   CheckCircle2,
   Code2,
+  Download,
+  Loader2,
   Play,
   Plus,
   Sparkles,
@@ -27,6 +30,40 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
+
+const CSV_PAGE_SIZE = 5000
+
+function csvEscape(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  let s: string
+  if (typeof value === 'object') {
+    try { s = JSON.stringify(value) } catch { s = String(value) }
+  } else {
+    s = String(value)
+  }
+  if (/[",\r\n]/.test(s)) {
+    s = '"' + s.replace(/"/g, '""') + '"'
+  }
+  return s
+}
+
+function rowsToCsv(rows: unknown[][]): string {
+  if (rows.length === 0) return ''
+  return rows.map(row => row.map(csvEscape).join(',')).join('\n') + '\n'
+}
+
+function triggerCsvDownload(content: string, fileName: string) {
+  // Prepend UTF-8 BOM so Excel auto-detects the encoding.
+  const blob = new Blob(['﻿', content], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+}
 
 const OPERATORS = [
   { value: '==', label: '==', group: 'Comparison' },
@@ -70,6 +107,8 @@ export function QueryEditor({ fileInfo }: QueryEditorProps) {
   const [plan, setPlan] = useState<QueryPlan | null>(null)
   const [queryKey, setQueryKey] = useState<number | null>(null)
   const [activeTab, setActiveTab] = useState('results')
+  const [exporting, setExporting] = useState(false)
+  const showError = useError()
 
   // Keep the latest built predicates available for the fetch callback
   const predicatesRef = useRef<QueryPredicate[]>([])
@@ -122,6 +161,32 @@ export function QueryEditor({ fileInfo }: QueryEditorProps) {
     setQueryKey((k) => (k ?? 0) + 1)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileInfo, predicates])
+
+  const exportCsv = useCallback(async () => {
+    if (!fileInfo || !plan || plan.matchedRows <= 0) return
+    setExporting(true)
+    try {
+      const total = plan.matchedRows
+      const baseName = (fileInfo.path.split(/[\\/]/).pop() ?? 'export').replace(/\.[^.]+$/, '')
+      const fileName = `${baseName || 'export'}.csv`
+
+      const firstPage = await bridge.executeQuery(predicatesRef.current, 0, CSV_PAGE_SIZE)
+      const { columns, rows: firstRows } = firstPage.data
+      const parts: string[] = [columns.map(csvEscape).join(',') + '\n', rowsToCsv(firstRows)]
+
+      for (let offset = CSV_PAGE_SIZE; offset < total; offset += CSV_PAGE_SIZE) {
+        const page = await bridge.executeQuery(predicatesRef.current, offset, CSV_PAGE_SIZE)
+        parts.push(rowsToCsv(page.data.rows))
+      }
+
+      triggerCsvDownload(parts.join(''), fileName)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      showError('Failed to export CSV', msg)
+    } finally {
+      setExporting(false)
+    }
+  }, [fileInfo, plan, showError])
 
   if (!fileInfo) {
     return (
@@ -295,6 +360,34 @@ export function QueryEditor({ fileInfo }: QueryEditorProps) {
                 </>
               ) : (
                 <span>No query run yet</span>
+              )}
+              {activeTab === 'results' && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={!plan || plan.matchedRows <= 0 || exporting}
+                  onClick={() => void exportCsv()}
+                  title={
+                    !plan
+                      ? 'Run a query first'
+                      : plan.matchedRows <= 0
+                        ? 'No rows matched'
+                        : `Export ${formatNumber(plan.matchedRows)} rows to CSV`
+                  }
+                >
+                  {exporting ? (
+                    <>
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                      Exporting…
+                    </>
+                  ) : (
+                    <>
+                      <Download className="h-3 w-3 mr-1" />
+                      Export CSV
+                    </>
+                  )}
+                </Button>
               )}
             </div>
           </div>
