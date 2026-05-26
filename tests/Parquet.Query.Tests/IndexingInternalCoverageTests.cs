@@ -24,7 +24,9 @@ public sealed class IndexingInternalCoverageTests
 
         Assert.Equal((true, "hello"), InvokeTryFormat("hello"));
         Assert.Equal((true, "AQI="), InvokeTryFormat(new byte[] { 1, 2 }));
-        Assert.Equal((true, ConsoleColor.DarkGreen.ToString()), InvokeTryFormat(ConsoleColor.DarkGreen));
+        // Enums are formatted via their underlying primitive value so that build-time
+        // (raw int from parquet) and query-time (enum predicate value) produce the same key.
+        Assert.Equal((true, ((int)ConsoleColor.DarkGreen).ToString()), InvokeTryFormat(ConsoleColor.DarkGreen));
         Assert.Equal((true, timestamp.ToUniversalTime().ToString("O")), InvokeTryFormat(timestamp));
         Assert.Equal((true, offsetTimestamp.ToUniversalTime().ToString("O")), InvokeTryFormat(offsetTimestamp));
         Assert.Equal((true, TimeSpan.FromMinutes(90).ToString("c")), InvokeTryFormat(TimeSpan.FromMinutes(90)));

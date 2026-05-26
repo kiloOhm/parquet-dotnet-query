@@ -1,3 +1,13 @@
+# 0.1.0-preview.6.2
+
+### Indexing Extensions
+
+- Fix `Where(row => row.EnumCol == EnumValue)` returning zero rows on parquet files with a footer bitmap index over an enum column. Parquet stores enums as their underlying primitive, so `FooterBitmapIndexingStrategy.BuildIndexAsync` formatted bitmap keys from the raw `int` values (e.g. `"1"`), while `FooterIndexPredicatePlanner.TryEvaluateRowGroup` formatted the predicate value via `Enum.ToString()` (e.g. `"EMEA"`). The lookup missed, the planner reported `mayMatch: false`, and every row group was pruned. `FooterIndexValueFormatter.TryFormat` now formats enum values through their underlying primitive (`Convert.ChangeType` to `Enum.GetUnderlyingType`), so build-time and query-time keys line up against existing parquet files — no re-indexing needed.
+
+### Parquet Viewer
+
+- Add Export CSV button to the query result view. Streams all matched rows through the existing `executeQuery` bridge in 5000-row pages, assembles an RFC 4180 CSV (with UTF-8 BOM for Excel), and triggers a browser download. The button lives in the Results tab header and reflects current state via tooltip and loading spinner.
+
 # 0.1.0-preview.6.1
 
 ### Core Query

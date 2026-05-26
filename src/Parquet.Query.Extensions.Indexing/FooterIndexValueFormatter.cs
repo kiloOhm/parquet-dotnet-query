@@ -62,7 +62,11 @@ internal static class FooterIndexValueFormatter
         var runtimeType = value.GetType();
         if (runtimeType.IsEnum)
         {
-            formatted = value.ToString() ?? string.Empty;
+            // Parquet stores enum columns using their underlying primitive type, so the
+            // bitmap index keys are formatted from ints (e.g. "1") at build time. Format
+            // enum predicate values the same way so equality lookups match.
+            var underlying = Convert.ChangeType(value, Enum.GetUnderlyingType(runtimeType), CultureInfo.InvariantCulture);
+            formatted = ((IFormattable)underlying).ToString(null, CultureInfo.InvariantCulture);
             return true;
         }
 
