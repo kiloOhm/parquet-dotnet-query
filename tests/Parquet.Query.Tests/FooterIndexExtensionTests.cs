@@ -48,6 +48,49 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task WriteAsync_builds_footer_bitmap_index_for_enum_column_and_returns_matching_rows()
+    {
+        // Regression: against a footer-bitmap-indexed enum column, the build path
+        // formatted bitmap keys from the raw underlying int (e.g. "1") while the
+        // planner formatted the predicate value via Enum.ToString() (e.g. "Europe"),
+        // so every lookup missed, every row group was reported as mayMatch:false,
+        // and equality queries silently returned zero rows.
+        var filePath = Path.Combine(_tempDirectory, "footer-bitmap-enum.parquet");
+
+        await ParquetFileWriter.WriteAsync(
+            new[]
+            {
+                new FooterBitmapEnumRow { Id = "1", Region = TestRegion.Europe },
+                new FooterBitmapEnumRow { Id = "2", Region = TestRegion.Americas },
+                new FooterBitmapEnumRow { Id = "3", Region = TestRegion.Asia },
+                new FooterBitmapEnumRow { Id = "4", Region = TestRegion.Asia },
+                new FooterBitmapEnumRow { Id = "5", Region = TestRegion.Europe },
+                new FooterBitmapEnumRow { Id = "6", Region = TestRegion.Americas }
+            },
+            filePath,
+            indexingStrategies: new[] { new FooterBitmapIndexingStrategy() },
+            serializerOptions: new ParquetSerializerOptions
+            {
+                RowGroupSize = 2
+            });
+
+        var query = ParquetQuery
+            .FromFile<FooterBitmapEnumRow>(filePath)
+            .WithFooterIndexes()
+            .Pushdown(filter => filter.Eq(row => row.Region, TestRegion.Europe));
+
+        var plan = await query.PlanAsync();
+        var rows = await query.ToListAsync();
+
+        Assert.Equal(new[] { "1", "5" }, rows.Select(row => row.Id).ToArray());
+        Assert.Equal(3, plan.RowGroups.Count);
+        Assert.True(plan.RowGroups[0].ShouldRead);   // contains Europe (row 1)
+        Assert.False(plan.RowGroups[1].ShouldRead);  // Asia-only, pruned by footer-bitmap
+        Assert.True(plan.RowGroups[2].ShouldRead);   // contains Europe (row 5)
+        Assert.Contains(plan.RowGroups.SelectMany(rowGroup => rowGroup.Decisions), decision => decision.Source.Contains("footer-bitmap", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task WriteAsync_builds_footer_bitmap_index_for_footer_encrypted_files()
     {
         var filePath = Path.Combine(_tempDirectory, "footer-bitmap-encrypted.parquet");
@@ -362,6 +405,22 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
 
         [ParquetFooterBitmapIndex]
         public string Group { get; set; } = string.Empty;
+    }
+
+    private enum TestRegion
+    {
+        None = 0,
+        Europe = 1,
+        Americas = 2,
+        Asia = 3
+    }
+
+    private sealed class FooterBitmapEnumRow
+    {
+        public string Id { get; set; } = string.Empty;
+
+        [ParquetFooterBitmapIndex]
+        public TestRegion Region { get; set; }
     }
 
     private sealed class PlainFooterBitmapRow
