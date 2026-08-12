@@ -1,3 +1,15 @@
+# 0.2.1-preview.6.3
+
+### Core Query
+
+- Decode string columns by reusing one `string` instance per distinct value in a row group instead of allocating one per row. parquet-dotnet v6 stores string data as `ReadOnlyMemory<char>` and its `ReadAsync(DataField, Memory<string?>, ...)` convenience overload materializes it by allocating a fresh string for every row, which made reading a filter column scale with row count rather than with distinct value count. Reading a 120 000-row string column measured 20-24 ms on that overload against 10-11 ms on the v5 reader; it now measures 14-16 ms, recovering a little over half of the difference. Columns of unique values allocate exactly what they did before.
+- Skip the reuse lookup entirely when a value repeats the previous one, so sort-key columns, which arrive as long runs, cost a single span comparison per row.
+
+### Validation
+
+- Pass all 135 net8 tests and all 133 net48 tests, including new coverage for interleaved nulls, empty strings, non-ASCII values, multiple row groups, values that differ only beyond the reuse hash sample, and filtering on a repeating string column.
+- Build the complete solution with zero warnings and errors.
+
 # 0.2.1-preview.6.2
 
 ### Encryption

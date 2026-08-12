@@ -38,9 +38,12 @@ internal static class ParquetColumnReaderCompatibility
         var fieldType = Nullable.GetUnderlyingType(field.ClrType) ?? field.ClrType;
         if (fieldType == typeof(string) || fieldType == typeof(ReadOnlyMemory<char>))
         {
-            var values = new string?[rowCount];
-            await rowGroupReader.ReadAsync(field, values.AsMemory(), cancellationToken: cancellationToken).ConfigureAwait(false);
-            return values;
+            // Deliberately not rowGroupReader.ReadAsync(field, Memory<string?>): that overload allocates
+            // a fresh string per row, which dominates the cost of reading a filter column whose values
+            // repeat - and the columns this library filters on repeat heavily.
+            return await StringColumnDecoder
+                .ReadAsync(rowGroupReader, field, rowCount, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         if (fieldType == typeof(byte[]) || fieldType == typeof(ReadOnlyMemory<byte>))
