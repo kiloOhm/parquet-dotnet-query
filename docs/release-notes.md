@@ -1,3 +1,15 @@
+# 0.2.1-preview.6.2
+
+### Encryption
+
+- Derive arbitrary non-empty strings passed to `WithFooterKey(...)` into 256-bit footer keys with SHA-256 before configuring the reader.
+- Preserve existing AES key material supplied as 16-, 24-, or 32-byte UTF-8, hexadecimal, Base64, or Base64url strings without deriving it again.
+
+### Validation
+
+- Pass all 131 net8 tests and all 130 net48 tests, including an encrypted-footer round trip using an independently derived string key.
+- Build the complete solution, benchmarks, and viewer with zero warnings and errors.
+
 # 0.1.0-preview.7
 
 ### Parquet Compatibility

@@ -1287,6 +1287,37 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         Assert.Equal(new[] { 1, 2 }, rows.Select(row => row.Id).ToArray());
     }
 
+#if PARQUET_V6
+    [Fact]
+    public async Task WithFooterKey_derives_arbitrary_string_before_reading()
+    {
+        var filePath = Path.Combine(_tempDirectory, "footer-encrypted-derived-key.parquet");
+        const string footerKey = "correct horse battery staple";
+        byte[] derivedKey;
+        using (var sha256 = System.Security.Cryptography.SHA256.Create())
+        {
+            derivedKey = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(footerKey));
+        }
+
+        await WriteRowsAsync(
+            filePath,
+            new[]
+            {
+                new TestRow { Id = 1, Country = "DE", Name = "alpha", Age = 10 },
+                new TestRow { Id = 2, Country = "US", Name = "beta", Age = 11 }
+            },
+            options => options.Encryption = new Parquet.ParquetEncryptionOptions(
+                new Parquet.ParquetKey(derivedKey)));
+
+        var rows = await ParquetQuery
+            .FromFile<TestRow>(filePath)
+            .WithFooterKey(footerKey)
+            .ToListAsync();
+
+        Assert.Equal(new[] { 1, 2 }, rows.Select(row => row.Id).ToArray());
+    }
+#endif
+
     [Fact]
     public async Task WithColumnKeyResolver_reads_column_encrypted_file()
     {

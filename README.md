@@ -164,6 +164,10 @@ The query layer forwards `ParquetOptions` and exposes convenience methods for co
 - `UseCtrVariant(...)`
 - `WithColumnKeyResolver(...)`
 
+`WithFooterKey(...)` accepts raw UTF-8, hexadecimal, Base64, and Base64url AES key material. A non-empty
+string that is not already a 16-, 24-, or 32-byte AES key is deterministically derived to 256 bits with
+SHA-256 before it is passed to the reader.
+
 Example:
 
 ```csharp
