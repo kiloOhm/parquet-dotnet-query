@@ -56,7 +56,12 @@ public sealed class FooterSortOrderIndexingStrategy : IParquetIndexingStrategy
         var model = new FooterSortOrderModel { Columns = sortKeys };
         var metadataKey = FooterIndexStorage.GetSortOrderMetadataKey();
         var metadataValue = FooterIndexStorage.Serialize(model);
-        var parquetOptions = ParquetOptionsFactory.Clone(context.WritePlan.SerializerOptions.ParquetOptions);
+        var parquetOptions = ParquetOptionsFactory.Clone(
+#if PARQUET_V6
+            context.WritePlan.SerializerOptions);
+#else
+            context.WritePlan.SerializerOptions.ParquetOptions);
+#endif
         await FooterIndexStorage.WriteToFooterAsync(context.FilePath, metadataKey, metadataValue, parquetOptions, cancellationToken).ConfigureAwait(false);
     }
 }

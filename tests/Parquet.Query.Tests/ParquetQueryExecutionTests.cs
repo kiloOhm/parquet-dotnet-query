@@ -5,6 +5,15 @@ using Parquet.Meta;
 using Parquet.Query.Planning;
 using Parquet.Query.Pushdown;
 using Parquet.Serialization;
+#if PARQUET_V6
+using TestColumnKeySpec = Parquet.Query.Tests.CompatibilityParquetOptions.ColumnKeySpec;
+using TestParquetOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+using TestParquetSerializerOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+#else
+using TestColumnKeySpec = Parquet.ParquetOptions.ColumnKeySpec;
+using TestParquetOptions = Parquet.ParquetOptions;
+using TestParquetSerializerOptions = Parquet.Serialization.ParquetSerializerOptions;
+#endif
 
 namespace Parquet.Query.Tests;
 
@@ -30,7 +39,11 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             .FromFile<TestRow>(filePath)
             .Where(row => row.Age >= 10);
 
+#if PARQUET_V6
+        var directRows = (await ParquetSerializer.DeserializeAsync<TestRow>(filePath)).Data;
+#else
         var directRows = await ParquetSerializer.DeserializeAsync<TestRow>(filePath);
+#endif
         var plan = await query.PlanAsync();
         var rows = await query.ToListAsync();
 
@@ -1292,7 +1305,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             options =>
             {
                 options.FooterEncryptionKey = footerKey;
-                options.ColumnKeys["Name"] = new ParquetOptions.ColumnKeySpec(columnKey, keyMetadata);
+                options.ColumnKeys["Name"] = new TestColumnKeySpec(columnKey, keyMetadata);
             })))
         {
             return;
@@ -1378,7 +1391,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
             options =>
             {
                 options.FooterEncryptionKey = footerKey;
-                options.ColumnKeys["Age"] = new ParquetOptions.ColumnKeySpec(columnKey, keyMetadata);
+                options.ColumnKeys["Age"] = new TestColumnKeySpec(columnKey, keyMetadata);
                 options.DataPageRowCountLimit = 2;
             },
             serializer => serializer.RowGroupSize = 6)))
@@ -1442,7 +1455,7 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     {
         var filePath = Path.Combine(_tempDirectory, "cloned-options.parquet");
         const string footerKey = "0123456789ABCDEF";
-        var options = new ParquetOptions
+        var options = new TestParquetOptions
         {
             FooterEncryptionKey = footerKey
         };
@@ -1525,17 +1538,17 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     private static Task WriteRowsAsync(
         string filePath,
         IReadOnlyCollection<TestRow> rows,
-        Action<ParquetOptions>? configureOptions = null,
-        Action<ParquetSerializerOptions>? configureSerializerOptions = null)
+        Action<TestParquetOptions>? configureOptions = null,
+        Action<TestParquetSerializerOptions>? configureSerializerOptions = null)
     {
-        var parquetOptions = new ParquetOptions();
-        parquetOptions.BloomFilterOptionsByColumn["Name"] = new ParquetOptions.BloomFilterOptions
+        var parquetOptions = new TestParquetOptions();
+        parquetOptions.BloomFilterOptionsByColumn["Name"] = new Parquet.ParquetOptions.BloomFilterOptions
         {
             EnableBloomFilters = true
         };
         configureOptions?.Invoke(parquetOptions);
 
-        var serializerOptions = new ParquetSerializerOptions
+        var serializerOptions = new TestParquetSerializerOptions
         {
             RowGroupSize = 2,
             ParquetOptions = parquetOptions
@@ -1551,14 +1564,14 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     private static Task WriteGenericRowsAsync<TRow>(
         string filePath,
         IReadOnlyCollection<TRow> rows,
-        Action<ParquetOptions>? configureOptions = null,
-        Action<ParquetSerializerOptions>? configureSerializerOptions = null)
+        Action<TestParquetOptions>? configureOptions = null,
+        Action<TestParquetSerializerOptions>? configureSerializerOptions = null)
         where TRow : class, new()
     {
-        var parquetOptions = new ParquetOptions();
+        var parquetOptions = new TestParquetOptions();
         configureOptions?.Invoke(parquetOptions);
 
-        var serializerOptions = new ParquetSerializerOptions
+        var serializerOptions = new TestParquetSerializerOptions
         {
             RowGroupSize = 2,
             ParquetOptions = parquetOptions
@@ -1574,13 +1587,13 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
     private static Task WriteNestedRowsAsync(
         string filePath,
         IReadOnlyCollection<NestedTestRow> rows,
-        Action<ParquetOptions>? configureOptions = null,
-        Action<ParquetSerializerOptions>? configureSerializerOptions = null)
+        Action<TestParquetOptions>? configureOptions = null,
+        Action<TestParquetSerializerOptions>? configureSerializerOptions = null)
     {
-        var parquetOptions = new ParquetOptions();
+        var parquetOptions = new TestParquetOptions();
         configureOptions?.Invoke(parquetOptions);
 
-        var serializerOptions = new ParquetSerializerOptions
+        var serializerOptions = new TestParquetSerializerOptions
         {
             RowGroupSize = 2,
             ParquetOptions = parquetOptions
@@ -1600,7 +1613,11 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         var fileBytes = System.IO.File.ReadAllBytes(filePath);
 
         using var input = new MemoryStream(fileBytes, writable: false);
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(input);
+#else
         using var reader = await ParquetReader.CreateAsync(input);
+#endif
 
         FileMetaData footerMetadata = reader.Metadata!;
         footerMetadata.KeyValueMetadata = reader.CustomMetadata
@@ -1638,7 +1655,11 @@ public sealed class ParquetQueryExecutionTests : IAsyncLifetime
         var fileBytes = System.IO.File.ReadAllBytes(filePath);
 
         using var input = new MemoryStream(fileBytes, writable: false);
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(input);
+#else
         using var reader = await ParquetReader.CreateAsync(input);
+#endif
 
         FileMetaData metadata = reader.Metadata!;
         foreach (var rowGroup in metadata.RowGroups)

@@ -103,7 +103,7 @@ internal static class RowGroupPlanner
             anyPageIndex);
     }
 
-    private static bool HasPersistedPageIndex(IParquetRowGroupReader rowGroupReader, IEnumerable<DataField> fields)
+    private static bool HasPersistedPageIndex(QueryParquetRowGroupReader rowGroupReader, IEnumerable<DataField> fields)
     {
         foreach (var field in fields)
         {
@@ -197,7 +197,7 @@ internal static class RowGroupPlanner
 
     private static RowGroupPredicateDecision EvaluateComparison<T>(
         ComparisonPushdownPredicate<T> predicate,
-        IParquetRowGroupReader rowGroupReader,
+        QueryParquetRowGroupReader rowGroupReader,
         DataField field)
     {
         var statistics = rowGroupReader.GetStatistics(field);
@@ -276,11 +276,13 @@ internal static class RowGroupPlanner
 
     private static RowGroupPredicateDecision EvaluateStartsWith<T>(
         StartsWithPushdownPredicate<T> predicate,
-        IParquetRowGroupReader rowGroupReader,
+        QueryParquetRowGroupReader rowGroupReader,
         DataField field)
     {
         var statistics = rowGroupReader.GetStatistics(field);
-        if (statistics?.MinValue is not string minValue || statistics.MaxValue is not string maxValue)
+        var minValue = ParquetColumnReaderCompatibility.GetLogicalValue(statistics?.MinValue) as string;
+        var maxValue = ParquetColumnReaderCompatibility.GetLogicalValue(statistics?.MaxValue) as string;
+        if (minValue is null || maxValue is null)
         {
             return new RowGroupPredicateDecision(
                 predicate.Description,
@@ -383,7 +385,11 @@ internal static class RowGroupPlanner
     }
 
     private static int CompareValues(object? left, object? right)
-        => PruningHelpers.CompareValues(left, right, allowNullEquality: false, "Values of type '{0}' are not comparable.");
+        => PruningHelpers.CompareValues(
+            ParquetColumnReaderCompatibility.GetLogicalValue(left),
+            ParquetColumnReaderCompatibility.GetLogicalValue(right),
+            allowNullEquality: false,
+            "Values of type '{0}' are not comparable.");
 
     private static string? GetOrdinalUpperBound(string prefix)
         => PruningHelpers.GetOrdinalUpperBound(prefix);

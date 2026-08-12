@@ -34,7 +34,12 @@ public sealed class LuceneFooterIndexingStrategy : IParquetIndexingStrategy
             throw new ArgumentNullException(nameof(descriptor));
         }
 
-        var parquetOptions = ParquetOptionsFactory.Clone(context.WritePlan.SerializerOptions.ParquetOptions);
+        var parquetOptions = ParquetOptionsFactory.Clone(
+#if PARQUET_V6
+            context.WritePlan.SerializerOptions);
+#else
+            context.WritePlan.SerializerOptions.ParquetOptions);
+#endif
         var index = await BuildIndexAsync(context.FilePath, descriptor.ColumnPath, parquetOptions, cancellationToken).ConfigureAwait(false);
         var metadataKey = LuceneFooterIndexStorage.GetMetadataKey(descriptor.ColumnPath);
         var metadataValue = LuceneFooterIndexStorage.Serialize(index);
@@ -48,7 +53,11 @@ public sealed class LuceneFooterIndexingStrategy : IParquetIndexingStrategy
         CancellationToken cancellationToken)
     {
         using var stream = System.IO.File.OpenRead(filePath);
+#if PARQUET_V6
+        await using var reader = await Parquet.ParquetReader.CreateAsync(
+#else
         using var reader = await Parquet.ParquetReader.CreateAsync(
+#endif
             stream,
             parquetOptions,
             leaveStreamOpen: false,
@@ -61,7 +70,7 @@ public sealed class LuceneFooterIndexingStrategy : IParquetIndexingStrategy
             throw new InvalidOperationException($"Column '{columnPath}' was not found in '{filePath}'.");
         }
 
-        var fieldType = Nullable.GetUnderlyingType(dataField.ClrType) ?? dataField.ClrType;
+        var fieldType = ParquetColumnReaderCompatibility.GetLogicalType(dataField);
         if (fieldType != typeof(string))
         {
             throw new InvalidOperationException($"Lucene indexes currently support string columns only. Column '{columnPath}' is '{fieldType.Name}'.");
@@ -73,8 +82,8 @@ public sealed class LuceneFooterIndexingStrategy : IParquetIndexingStrategy
         for (var rowGroupIndex = 0; rowGroupIndex < reader.RowGroupCount; rowGroupIndex++)
         {
             using var rowGroupReader = reader.OpenRowGroupReader(rowGroupIndex);
-            var column = await rowGroupReader.ReadColumnAsync(dataField, cancellationToken).ConfigureAwait(false);
-            var terms = ExtractTerms(column.Data);
+            var column = await ParquetColumnReaderCompatibility.ReadColumnAsync(rowGroupReader, dataField, cancellationToken).ConfigureAwait(false);
+            var terms = ExtractTerms(column);
             rowGroupTerms.Add(terms);
             allTerms.UnionWith(terms);
         }

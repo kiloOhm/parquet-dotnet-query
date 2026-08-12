@@ -52,7 +52,12 @@ public sealed class FooterBitmapIndexingStrategy : IParquetIndexingStrategy
             throw new ArgumentNullException(nameof(descriptor));
         }
 
-        var parquetOptions = ParquetOptionsFactory.Clone(context.WritePlan.SerializerOptions.ParquetOptions);
+        var parquetOptions = ParquetOptionsFactory.Clone(
+#if PARQUET_V6
+            context.WritePlan.SerializerOptions);
+#else
+            context.WritePlan.SerializerOptions.ParquetOptions);
+#endif
         var index = await BuildIndexAsync(context.FilePath, descriptor.ColumnPath, parquetOptions, MaxDistinctValues, cancellationToken).ConfigureAwait(false);
         var metadataKey = FooterIndexStorage.GetBitmapMetadataKey(descriptor.ColumnPath);
         var metadataValue = FooterIndexStorage.Serialize(index);
@@ -67,7 +72,11 @@ public sealed class FooterBitmapIndexingStrategy : IParquetIndexingStrategy
         CancellationToken cancellationToken)
     {
         using var stream = System.IO.File.OpenRead(filePath);
+#if PARQUET_V6
+        await using var reader = await Parquet.ParquetReader.CreateAsync(
+#else
         using var reader = await Parquet.ParquetReader.CreateAsync(
+#endif
             stream,
             parquetOptions,
             leaveStreamOpen: false,
@@ -80,7 +89,7 @@ public sealed class FooterBitmapIndexingStrategy : IParquetIndexingStrategy
             throw new InvalidOperationException($"Column '{columnPath}' was not found in '{filePath}'.");
         }
 
-        var fieldType = Nullable.GetUnderlyingType(dataField.ClrType) ?? dataField.ClrType;
+        var fieldType = ParquetColumnReaderCompatibility.GetLogicalType(dataField);
         if (!FooterIndexValueFormatter.IsSupportedType(fieldType))
         {
             FooterIndexDiagnostics.WarnBitmapUnsupportedType(columnPath, fieldType);
@@ -91,12 +100,12 @@ public sealed class FooterBitmapIndexingStrategy : IParquetIndexingStrategy
         for (var rowGroupIndex = 0; rowGroupIndex < reader.RowGroupCount; rowGroupIndex++)
         {
             using var rowGroupReader = reader.OpenRowGroupReader(rowGroupIndex);
-            var column = await rowGroupReader.ReadColumnAsync(dataField, cancellationToken).ConfigureAwait(false);
+            var column = await ParquetColumnReaderCompatibility.ReadColumnAsync(rowGroupReader, dataField, cancellationToken).ConfigureAwait(false);
             var rowGroupValues = new HashSet<string>(StringComparer.Ordinal);
 
-            for (var index = 0; index < column.Data.Length; index++)
+            for (var index = 0; index < column.Length; index++)
             {
-                if (!FooterIndexValueFormatter.TryFormat(column.Data.GetValue(index), out var value))
+                if (!FooterIndexValueFormatter.TryFormat(column.GetValue(index), out var value))
                 {
                     continue;
                 }

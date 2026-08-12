@@ -556,7 +556,16 @@ internal static class SourceMaterializationPlanBuilder
             return ConvertCollectionValue(value, nonNullableType, elementType);
         }
 
-        return PushdownPredicateFactory.ConvertValue(value, nonNullableType);
+        try
+        {
+            return PushdownPredicateFactory.ConvertValue(value, nonNullableType);
+        }
+        catch (Exception exception) when (exception is InvalidCastException or FormatException or OverflowException)
+        {
+            throw new InvalidOperationException(
+                $"Cannot assign Parquet value of type '{value.GetType()}' to '{targetType}'.",
+                exception);
+        }
     }
 
     private static object ConvertCollectionValue(object value, Type targetType, Type elementType)

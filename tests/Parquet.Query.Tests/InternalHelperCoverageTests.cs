@@ -4,6 +4,11 @@ using Parquet.Query.Extensions.Writing;
 using Parquet.Query.Internal;
 using Parquet.Query.Planning;
 using Parquet.Query.Pushdown;
+#if PARQUET_V6
+using TestParquetOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+#else
+using TestParquetOptions = Parquet.ParquetOptions;
+#endif
 
 namespace Parquet.Query.Tests;
 
@@ -154,44 +159,57 @@ public sealed class InternalHelperCoverageTests
     [Fact]
     public void ParquetOptionsFactory_clone_copies_mutable_state()
     {
-        var source = new ParquetOptions
+        var source = new TestParquetOptions
         {
             TreatByteArrayAsString = true,
             UseDictionaryEncoding = true,
-            FooterEncryptionKey = "footer-key",
+            FooterEncryptionKey = "0123456789ABCDEF",
             FooterEncryptionKeyMetadata = new byte[] { 1, 2, 3 },
-            FooterSigningKey = "signing-key",
+            FooterSigningKey = "FEDCBA9876543210",
             FooterSigningKeyMetadata = new byte[] { 4, 5, 6 },
             AADPrefix = "aad",
             SupplyAadPrefix = true,
             UseCtrVariant = true,
             ColumnKeyResolver = (path, metadata) => path.Count > 0 && metadata is not null ? "column-key" : null
         };
-        source.BloomFilterOptionsByColumn["Name"] = new ParquetOptions.BloomFilterOptions
+        source.BloomFilterOptionsByColumn["Name"] = new Parquet.ParquetOptions.BloomFilterOptions
         {
             EnableBloomFilters = true,
             BloomFilterFpp = 0.05f,
             BloomFilterBitsPerValueOverride = 12
         };
-        source.ColumnKeys["Name"] = new ParquetOptions.ColumnKeySpec("col-key", new byte[] { 7, 8, 9 });
+#if PARQUET_V6
+        source.ColumnKeys["Name"] = new CompatibilityParquetOptions.ColumnKeySpec("0011223344556677", new byte[] { 7, 8, 9 });
+#else
+        source.ColumnKeys["Name"] = new Parquet.ParquetOptions.ColumnKeySpec("col-key", new byte[] { 7, 8, 9 });
+#endif
 
         var clone = ParquetOptionsFactory.Clone(source);
 
         Assert.NotSame(source, clone);
         Assert.True(clone.TreatByteArrayAsString);
+#if PARQUET_V6
+        Assert.NotSame(source.Encryption, clone.Encryption);
+        Assert.NotSame(source.Decryption, clone.Decryption);
+        Assert.Equal(source.Encryption!.FooterKey.KeyBytes, clone.Encryption!.FooterKey.KeyBytes);
+        Assert.Equal(source.Decryption!.FooterKey, clone.Decryption!.FooterKey);
+#else
         Assert.True(clone.UseDictionaryEncoding);
         Assert.Equal(source.FooterEncryptionKey, clone.FooterEncryptionKey);
         Assert.Equal(source.FooterEncryptionKeyMetadata, clone.FooterEncryptionKeyMetadata);
         Assert.NotSame(source.FooterEncryptionKeyMetadata, clone.FooterEncryptionKeyMetadata);
         Assert.Equal(source.FooterSigningKeyMetadata, clone.FooterSigningKeyMetadata);
         Assert.NotSame(source.FooterSigningKeyMetadata, clone.FooterSigningKeyMetadata);
+#endif
         Assert.True(clone.BloomFilterOptionsByColumn["Name"].EnableBloomFilters);
         Assert.Equal(0.05f, clone.BloomFilterOptionsByColumn["Name"].BloomFilterFpp);
         Assert.Equal(12, clone.BloomFilterOptionsByColumn["Name"].BloomFilterBitsPerValueOverride);
+#if !PARQUET_V6
         Assert.Equal("col-key", clone.ColumnKeys["Name"].Key);
         Assert.Equal(new byte[] { 7, 8, 9 }, clone.ColumnKeys["Name"].KeyMetadata);
         Assert.NotSame(source.ColumnKeys["Name"].KeyMetadata, clone.ColumnKeys["Name"].KeyMetadata);
         Assert.Same(source.ColumnKeyResolver, clone.ColumnKeyResolver);
+#endif
     }
 
     [Fact]

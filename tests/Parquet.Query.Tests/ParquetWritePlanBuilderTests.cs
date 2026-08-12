@@ -6,6 +6,11 @@ using Parquet.Query.Extensions.Writing.Attributes;
 using Parquet.Query.Extensions.Writing.Indexing;
 using Parquet.Serialization;
 using Parquet.Serialization.Attributes;
+#if PARQUET_V6
+using TestParquetSerializerOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+#else
+using TestParquetSerializerOptions = Parquet.Serialization.ParquetSerializerOptions;
+#endif
 
 namespace Parquet.Query.Tests;
 
@@ -48,7 +53,7 @@ public sealed class ParquetWritePlanBuilderTests : IAsyncLifetime
     [Fact]
     public void Build_allows_explicit_options_to_override_attribute_defaults()
     {
-        var explicitOptions = new ParquetSerializerOptions
+        var explicitOptions = new TestParquetSerializerOptions
         {
             CompressionMethod = CompressionMethod.Gzip,
             CompressionLevel = CompressionLevel.Fastest,
@@ -99,7 +104,11 @@ public sealed class ParquetWritePlanBuilderTests : IAsyncLifetime
             filePath,
             plan);
 
+#if PARQUET_V6
+        var rows = (await ParquetSerializer.DeserializeAsync<OptimizedWriteRow>(filePath)).Data;
+#else
         var rows = await ParquetSerializer.DeserializeAsync<OptimizedWriteRow>(filePath);
+#endif
 
         Assert.Same(plan, returnedPlan);
         Assert.Single(rows);
@@ -126,7 +135,11 @@ public sealed class ParquetWritePlanBuilderTests : IAsyncLifetime
             },
             filePath);
 
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(filePath);
+#else
         using var reader = await ParquetReader.CreateAsync(filePath);
+#endif
         using var rowGroupReader = reader.OpenRowGroupReader(0);
         var eventNameField = reader.Schema.GetDataFields().Single(field => field.Path.ToString() == "event_name");
         var metadata = rowGroupReader.GetMetadata(eventNameField);
@@ -156,7 +169,11 @@ public sealed class ParquetWritePlanBuilderTests : IAsyncLifetime
             filePath,
             indexingStrategies: new[] { strategy });
 
+#if PARQUET_V6
+        var rows = (await ParquetSerializer.DeserializeAsync<OptimizedWriteRow>(filePath)).Data;
+#else
         var rows = await ParquetSerializer.DeserializeAsync<OptimizedWriteRow>(filePath);
+#endif
 
         Assert.Single(rows);
         Assert.Equal("signup", rows[0].EventName);

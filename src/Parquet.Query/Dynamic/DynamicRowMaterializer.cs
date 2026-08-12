@@ -25,8 +25,7 @@ internal static class DynamicRowMaterializer
             if (!rgReader.ColumnExists(field))
                 continue;
 
-            var dataColumn = await rgReader.ReadColumnAsync(field, cancellationToken).ConfigureAwait(false);
-            var data = dataColumn.Data;
+            var data = await Internal.ParquetColumnReaderCompatibility.ReadColumnAsync(rgReader, field, cancellationToken).ConfigureAwait(false);
             var columnPath = field.Path.ToString();
             var isFullCoverage = rowIndexes.Length == rowCount && IsIdentityMap(rowIndexes);
 

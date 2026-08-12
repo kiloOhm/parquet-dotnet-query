@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using Parquet.Query.Internal;
 using Parquet.Query.Pushdown;
 using Parquet.Schema;
 
@@ -26,7 +27,7 @@ internal static class DynamicPredicateCompiler
                 continue;
             }
 
-            var targetType = Nullable.GetUnderlyingType(field.ClrNullableIfHasNullsType) ?? field.ClrType;
+            var targetType = ParquetColumnReaderCompatibility.GetLogicalType(field);
             var op = NormalizeOperator(predicate.Operator);
 
             switch (op)
@@ -284,9 +285,10 @@ internal static class DynamicPredicateCompiler
         if (string.IsNullOrWhiteSpace(value))
             return Array.Empty<string>();
 
+        var normalizedValue = value!;
         var tokens = new List<string>();
-        var buffer = new StringBuilder(value.Length);
-        foreach (var c in value)
+        var buffer = new StringBuilder(normalizedValue.Length);
+        foreach (var c in normalizedValue)
         {
             if (char.IsLetterOrDigit(c))
             {

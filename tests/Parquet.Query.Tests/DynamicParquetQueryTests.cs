@@ -1,6 +1,11 @@
 using Parquet;
 using Parquet.Query.Dynamic;
 using Parquet.Serialization;
+#if PARQUET_V6
+using TestParquetSerializerOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+#else
+using TestParquetSerializerOptions = Parquet.Serialization.ParquetSerializerOptions;
+#endif
 
 namespace Parquet.Query.Tests;
 
@@ -13,7 +18,11 @@ public sealed class DynamicParquetQueryTests : IAsyncLifetime
     {
         var filePath = await WriteTestFileAsync("all-rows.parquet");
 
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(filePath);
+#else
         using var reader = await ParquetReader.CreateAsync(filePath);
+#endif
         var query = DynamicParquetQuery.FromReader(reader, filePath);
         var result = await query.ExecuteAsync();
 
@@ -28,7 +37,11 @@ public sealed class DynamicParquetQueryTests : IAsyncLifetime
     {
         var filePath = await WriteTestFileAsync("eq-filter.parquet");
 
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(filePath);
+#else
         using var reader = await ParquetReader.CreateAsync(filePath);
+#endif
         var query = DynamicParquetQuery.FromReader(reader, filePath)
             .Where(new DynamicPredicate("Country", "==", "US"));
         var result = await query.ExecuteAsync();
@@ -42,7 +55,11 @@ public sealed class DynamicParquetQueryTests : IAsyncLifetime
     {
         var filePath = await WriteTestFileAsync("range-filter.parquet");
 
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(filePath);
+#else
         using var reader = await ParquetReader.CreateAsync(filePath);
+#endif
         var query = DynamicParquetQuery.FromReader(reader, filePath)
             .Where(new DynamicPredicate("Age", ">=", "30"));
         var result = await query.ExecuteAsync();
@@ -61,7 +78,11 @@ public sealed class DynamicParquetQueryTests : IAsyncLifetime
     {
         var filePath = await WriteTestFileAsync("between-filter.parquet");
 
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(filePath);
+#else
         using var reader = await ParquetReader.CreateAsync(filePath);
+#endif
         var query = DynamicParquetQuery.FromReader(reader, filePath)
             .Where(new DynamicPredicate("Age", "between", "15", "25"));
         var result = await query.ExecuteAsync();
@@ -77,7 +98,11 @@ public sealed class DynamicParquetQueryTests : IAsyncLifetime
     {
         var filePath = await WriteTestFileAsync("startswith-filter.parquet");
 
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(filePath);
+#else
         using var reader = await ParquetReader.CreateAsync(filePath);
+#endif
         var query = DynamicParquetQuery.FromReader(reader, filePath)
             .Where(new DynamicPredicate("Name", "startsWith", "al"));
         var result = await query.ExecuteAsync();
@@ -91,7 +116,11 @@ public sealed class DynamicParquetQueryTests : IAsyncLifetime
     {
         var filePath = await WriteTestFileAsync("paging.parquet");
 
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(filePath);
+#else
         using var reader = await ParquetReader.CreateAsync(filePath);
+#endif
         var query = DynamicParquetQuery.FromReader(reader, filePath);
         var result = await query.ExecuteAsync(offset: 1, limit: 2);
 
@@ -106,7 +135,11 @@ public sealed class DynamicParquetQueryTests : IAsyncLifetime
     {
         var filePath = await WriteTestFileAsync("plan.parquet");
 
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(filePath);
+#else
         using var reader = await ParquetReader.CreateAsync(filePath);
+#endif
         var query = DynamicParquetQuery.FromReader(reader, filePath)
             .Where(new DynamicPredicate("Age", ">", "25"));
         var plan = await query.PlanAsync();
@@ -121,7 +154,11 @@ public sealed class DynamicParquetQueryTests : IAsyncLifetime
     {
         var filePath = await WriteTestFileAsync("count.parquet");
 
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(filePath);
+#else
         using var reader = await ParquetReader.CreateAsync(filePath);
+#endif
         var noFilterCount = await DynamicParquetQuery.FromReader(reader, filePath).CountAsync();
         var filteredCount = await DynamicParquetQuery.FromReader(reader, filePath)
             .Where(new DynamicPredicate("Country", "==", "DE"))
@@ -136,7 +173,11 @@ public sealed class DynamicParquetQueryTests : IAsyncLifetime
     {
         var filePath = await WriteTestFileAsync("stream.parquet");
 
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(filePath);
+#else
         using var reader = await ParquetReader.CreateAsync(filePath);
+#endif
         var query = DynamicParquetQuery.FromReader(reader, filePath)
             .Where(new DynamicPredicate("Country", "==", "US"));
 
@@ -153,7 +194,11 @@ public sealed class DynamicParquetQueryTests : IAsyncLifetime
     {
         var filePath = await WriteTestFileAsync("convenience.parquet");
 
+#if PARQUET_V6
+        await using var reader = await ParquetReader.CreateAsync(filePath);
+#else
         using var reader = await ParquetReader.CreateAsync(filePath);
+#endif
         var query = ParquetQuery.FromReader(reader, filePath)
             .Where(new DynamicPredicate("Id", "==", "1"));
         var result = await query.ExecuteAsync();
@@ -173,7 +218,7 @@ public sealed class DynamicParquetQueryTests : IAsyncLifetime
             new TestRow { Id = 4, Country = "US", Name = "delta", Age = 30 },
         };
 
-        var serializerOptions = new ParquetSerializerOptions
+        var serializerOptions = new TestParquetSerializerOptions
         {
             RowGroupSize = 2,
         };

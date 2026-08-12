@@ -17,7 +17,7 @@ public sealed class PredicateEvaluator
         string filePath,
         IReadOnlyDictionary<string, string> customMetadata,
         int rowGroupIndex,
-        IParquetRowGroupReader rgReader,
+        ParquetRowGroupReader rgReader,
         DataField[] dataFields,
         QueryPredicate[] predicates)
     {
