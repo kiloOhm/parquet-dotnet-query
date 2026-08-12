@@ -371,17 +371,21 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <summary>
     /// Configures footer encryption for all queried files.
     /// </summary>
-    /// <param name="footerEncryptionKey">The encryption key to use for footer metadata.</param>
+    /// <param name="footerEncryptionKey">
+    /// The footer key as raw UTF-8, hexadecimal, or Base64 key material. Other strings are derived to a
+    /// 256-bit key with SHA-256.
+    /// </param>
     /// <param name="keyMetadata">Optional key metadata associated with the key.</param>
     /// <returns>A new query with footer encryption options applied.</returns>
     public ParquetQuery<TSource, TResult> WithFooterKey(string footerEncryptionKey, byte[]? keyMetadata = null) =>
         ConfigureParquetOptions(options =>
         {
+            var footerKey = ParquetKeyDerivation.FromString(footerEncryptionKey);
 #if PARQUET_V6
             options.Decryption ??= new ParquetDecryptionOptions();
-            options.Decryption.FooterKey = Encoding.UTF8.GetBytes(footerEncryptionKey);
+            options.Decryption.FooterKey = footerKey;
 #else
-            options.FooterEncryptionKey = footerEncryptionKey;
+            options.FooterEncryptionKey = Convert.ToBase64String(footerKey);
             options.FooterEncryptionKeyMetadata = keyMetadata?.ToArray();
 #endif
         });
