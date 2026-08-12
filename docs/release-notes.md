@@ -1,3 +1,21 @@
+# 0.1.0-preview.7
+
+### Parquet Compatibility
+
+- Upgrade net8 builds to `kiloOhm.Parquet.Net 6.1.1-pre.4` while retaining the legacy net48 dependency, with compatibility adapters for the v6 reader, serializer, schema, encryption, and page-index APIs.
+- Use parquet-dotnet's authenticated footer metadata update API so bitmap, sort-order, and Lucene footer indexes preserve encrypted and signed plaintext footers.
+- Support path-aware encryption key retrieval and page-index fallback scanning introduced across the parquet-dotnet pre.1 through pre.4 releases.
+
+### Core Query
+
+- Preserve predicate pushdown, projection, partial-row materialization, query caching, and dynamic queries across both parquet-dotnet API generations.
+- Keep encrypted reader pooling, AAD configuration, column-key resolution, and option fingerprinting compatible with the v6 encryption model.
+
+### Validation
+
+- Pass all 123 tests on both net8 and net48, including encrypted bitmap/Lucene footer indexes and signed plaintext footer preservation.
+- Build the complete solution, benchmarks, and viewer with zero warnings and errors.
+
 # 0.1.0-preview.6.2
 
 ### Indexing Extensions

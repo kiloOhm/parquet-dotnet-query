@@ -3,6 +3,13 @@ using Parquet.Query.Extensions.Search;
 using Parquet.Query.Extensions.Writing;
 using Parquet.Query.Extensions.Writing.Attributes;
 using Parquet.Serialization;
+#if PARQUET_V6
+using TestParquetOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+using TestParquetSerializerOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+#else
+using TestParquetOptions = Parquet.ParquetOptions;
+using TestParquetSerializerOptions = Parquet.Serialization.ParquetSerializerOptions;
+#endif
 
 namespace Parquet.Query.Tests;
 
@@ -25,7 +32,7 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
             },
             filePath,
             indexingStrategies: new[] { new LuceneFooterIndexingStrategy() },
-            serializerOptions: new ParquetSerializerOptions
+            serializerOptions: new TestParquetSerializerOptions
             {
                 RowGroupSize = 2
             });
@@ -59,7 +66,7 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
             },
             filePath,
             indexingStrategies: new[] { new LuceneFooterIndexingStrategy() },
-            serializerOptions: new ParquetSerializerOptions
+            serializerOptions: new TestParquetSerializerOptions
             {
                 RowGroupSize = 2
             });
@@ -85,7 +92,7 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
             },
             filePath,
             indexingStrategies: new[] { new LuceneFooterIndexingStrategy() },
-            serializerOptions: new ParquetSerializerOptions
+            serializerOptions: new TestParquetSerializerOptions
             {
                 RowGroupSize = 1
             });
@@ -120,10 +127,10 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
             },
             filePath,
             indexingStrategies: new[] { new LuceneFooterIndexingStrategy() },
-            serializerOptions: new ParquetSerializerOptions
+            serializerOptions: new TestParquetSerializerOptions
             {
                 RowGroupSize = 2,
-                ParquetOptions = new ParquetOptions
+                ParquetOptions = new TestParquetOptions
                 {
                     FooterEncryptionKey = footerKey
                 }
@@ -160,7 +167,7 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
                 new PlainSearchRow { Id = 3, Name = "Harbor Maps" }
             },
             filePath,
-            new ParquetSerializerOptions
+            new TestParquetSerializerOptions
             {
                 RowGroupSize = 1
             });
@@ -191,7 +198,7 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
             },
             filePath,
             indexingStrategies: new[] { new LuceneFooterIndexingStrategy() },
-            serializerOptions: new ParquetSerializerOptions
+            serializerOptions: new TestParquetSerializerOptions
             {
                 RowGroupSize = 1
             });
@@ -357,7 +364,11 @@ public sealed class LuceneSearchExtensionTests : IAsyncLifetime
         var fileBytes = System.IO.File.ReadAllBytes(filePath);
 
         using var input = new MemoryStream(fileBytes, writable: false);
+#if PARQUET_V6
+        await using var reader = await Parquet.ParquetReader.CreateAsync(input);
+#else
         using var reader = await Parquet.ParquetReader.CreateAsync(input);
+#endif
 
         var footerMetadata = reader.Metadata!;
         footerMetadata.KeyValueMetadata = reader.CustomMetadata

@@ -55,7 +55,11 @@ internal sealed class FileParquetReaderFactory : IParquetReaderFactory
             }
 
             _disposed = true;
+#if PARQUET_V6
+            await Reader.DisposeAsync().ConfigureAwait(false);
+#else
             Reader.Dispose();
+#endif
             await AsyncCompatibility.DisposeAsync(_stream).ConfigureAwait(false);
         }
     }

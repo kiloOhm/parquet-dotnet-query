@@ -21,7 +21,7 @@ public sealed class ParquetRowGroupPlannerContext
         string filePath,
         int rowGroupIndex,
         ParquetReader reader,
-        IParquetRowGroupReader rowGroupReader,
+        QueryParquetRowGroupReader rowGroupReader,
         ParquetSchema schema,
         IReadOnlyDictionary<string, DataField> dataFields)
     {
@@ -51,7 +51,7 @@ public sealed class ParquetRowGroupPlannerContext
     /// <summary>
     /// Gets the open row-group reader.
     /// </summary>
-    public IParquetRowGroupReader RowGroupReader { get; }
+    public QueryParquetRowGroupReader RowGroupReader { get; }
 
     /// <summary>
     /// Gets the parquet schema.
@@ -82,7 +82,7 @@ public sealed class ParquetPagePruningContext
         string filePath,
         int rowGroupIndex,
         ParquetReader reader,
-        IParquetRowGroupReader rowGroupReader,
+        QueryParquetRowGroupReader rowGroupReader,
         ParquetSchema schema,
         IReadOnlyDictionary<string, DataField> dataFields)
     {
@@ -112,7 +112,7 @@ public sealed class ParquetPagePruningContext
     /// <summary>
     /// Gets the open row-group reader.
     /// </summary>
-    public IParquetRowGroupReader RowGroupReader { get; }
+    public QueryParquetRowGroupReader RowGroupReader { get; }
 
     /// <summary>
     /// Gets the parquet schema.

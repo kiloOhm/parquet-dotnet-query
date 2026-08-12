@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Reflection;
 using System.Text.Json;
 using Parquet;
 using Parquet.Data;
@@ -41,7 +42,7 @@ public sealed class ParquetService : IDisposable
 
     public async Task<ParquetFileInfo> OpenFileAsync(string filePath, EncryptionConfig? encryption = null)
     {
-        _reader?.Dispose();
+        DisposeReader();
         _currentFilePath = filePath;
         _currentEncryption = encryption;
         _currentOptions = BuildOptions(encryption);
@@ -119,12 +120,12 @@ public sealed class ParquetService : IDisposable
 
                 // Read all leaf DataColumns with their repetition/definition levels
                 var allDataFields = _reader.Schema.GetDataFields();
-                var dataColumns = new Dictionary<string, DataColumn>();
+                var dataColumns = new Dictionary<string, ViewerDataColumn>();
                 foreach (var df in allDataFields)
                 {
                     if (rgReader.ColumnExists(df))
                     {
-                        dataColumns[df.Path.ToString()] = await rgReader.ReadColumnAsync(df);
+                        dataColumns[df.Path.ToString()] = await ReadColumnAsync(rgReader, df);
                     }
                 }
 
@@ -165,7 +166,7 @@ public sealed class ParquetService : IDisposable
     /// For primitive fields, returns the values directly.
     /// For Map/List/Struct, groups leaf values using repetition levels.
     /// </summary>
-    private List<object?> ReconstructField(Field field, Dictionary<string, DataColumn> dataColumns, int rowCount)
+    private List<object?> ReconstructField(Field field, Dictionary<string, ViewerDataColumn> dataColumns, int rowCount)
     {
         switch (field)
         {
@@ -194,7 +195,7 @@ public sealed class ParquetService : IDisposable
                 if (!dataColumns.TryGetValue(keyPath, out var keyCol))
                     return Enumerable.Repeat<object?>(null, rowCount).ToList();
 
-                DataColumn? valCol = null;
+                ViewerDataColumn? valCol = null;
                 if (valLeaves.Count > 0)
                     dataColumns.TryGetValue(valLeaves[0].Path.ToString(), out valCol);
 
@@ -273,7 +274,7 @@ public sealed class ParquetService : IDisposable
     /// RL entries actually have data (the Data array excludes nulls, so it may be shorter
     /// than the RL array).
     /// </summary>
-    private static List<object?> GroupByRepetition(DataColumn dc, int rowCount, Func<List<int>, object?> assembler)
+    private static List<object?> GroupByRepetition(ViewerDataColumn dc, int rowCount, Func<List<int>, object?> assembler)
     {
         var result = new List<object?>(rowCount);
         var rl = dc.RepetitionLevels;
@@ -359,7 +360,7 @@ public sealed class ParquetService : IDisposable
     /// <summary>
     /// Fallback for complex nested types: produce a flat string representation.
     /// </summary>
-    private List<object?> ReconstructFlatFallback(List<DataField> leafFields, Dictionary<string, DataColumn> dataColumns, int rowCount)
+    private List<object?> ReconstructFlatFallback(List<DataField> leafFields, Dictionary<string, ViewerDataColumn> dataColumns, int rowCount)
     {
         var result = new List<object?>(rowCount);
         for (int r = 0; r < rowCount; r++)
@@ -706,33 +707,49 @@ public sealed class ParquetService : IDisposable
 
         if (encryption is null) return options;
 
+        var decryption = new ParquetDecryptionOptions();
+
         if (!string.IsNullOrEmpty(encryption.FooterKey))
         {
-            options.FooterEncryptionKey = NormalizeKey(encryption.FooterKey);
+            decryption.FooterKey = NormalizeKeyBytes(encryption.FooterKey);
         }
 
         if (!string.IsNullOrEmpty(encryption.FooterSigningKey))
         {
-            options.FooterSigningKey = NormalizeKey(encryption.FooterSigningKey);
+            decryption.FooterKey = NormalizeKeyBytes(encryption.FooterSigningKey);
         }
-
-        options.UsePlaintextFooter = encryption.PlaintextFooter;
-        options.UseCtrVariant = encryption.UseCtr;
 
         if (!string.IsNullOrEmpty(encryption.AadPrefix))
         {
-            options.AADPrefix = encryption.AadPrefix;
+            decryption.AadPrefix = System.Text.Encoding.UTF8.GetBytes(encryption.AadPrefix);
         }
 
         if (encryption.ColumnKeys is { Count: > 0 } columnKeys)
         {
             foreach (var (columnPath, rawKey) in columnKeys)
             {
-                options.ColumnKeys[columnPath] = new ParquetOptions.ColumnKeySpec(NormalizeKey(rawKey));
+                decryption.ColumnKeys[columnPath] = NormalizeKeyBytes(rawKey);
             }
         }
 
+        options.Decryption = decryption;
         return options;
+    }
+
+    private static byte[] NormalizeKeyBytes(string key)
+    {
+        var normalized = NormalizeKey(key);
+        if (IsValidHexKey(normalized))
+        {
+            return Convert.FromHexString(normalized);
+        }
+
+        if (IsValidBase64Key(normalized))
+        {
+            return Convert.FromBase64String(normalized);
+        }
+
+        return System.Text.Encoding.UTF8.GetBytes(normalized);
     }
 
     /// <summary>
@@ -796,11 +813,43 @@ public sealed class ParquetService : IDisposable
         {
             null => null,
             byte[] bytes => Convert.ToBase64String(bytes),
+            ReadOnlyMemory<byte> bytes => Convert.ToBase64String(bytes.Span),
+            ReadOnlyMemory<char> text => new string(text.Span),
             DateTimeOffset dto => dto.ToString("O"),
             DateTime dt => dt.ToString("O"),
             TimeSpan ts => ts.ToString(),
             _ => value
         };
+    }
+
+    private static async Task<ViewerDataColumn> ReadColumnAsync(ParquetRowGroupReader reader, DataField field)
+    {
+        using RawColumnData rawColumn = await reader.ReadRawColumnDataBaseAsync(field);
+        var copyMethod = typeof(ParquetService)
+            .GetMethod(nameof(CopyRawColumn), BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(field.ClrType);
+        return (ViewerDataColumn)copyMethod.Invoke(null, new object[] { rawColumn, field })!;
+    }
+
+    private static ViewerDataColumn CopyRawColumn<T>(RawColumnData rawColumn, DataField field)
+        where T : struct
+    {
+        var typedColumn = (RawColumnData<T>)rawColumn;
+        var values = typedColumn.Values.ToArray();
+        var definitionLevels = field.MaxDefinitionLevel > 0 ? rawColumn.DefinitionLevels.ToArray() : null;
+        var repetitionLevels = field.MaxRepetitionLevel > 0 ? rawColumn.RepetitionLevels.ToArray() : null;
+        return new ViewerDataColumn(field, values, definitionLevels, repetitionLevels);
+    }
+
+    private void DisposeReader()
+    {
+        if (_reader is null)
+        {
+            return;
+        }
+
+        _reader.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _reader = null;
     }
 
     private void EnsureOpen()
@@ -811,11 +860,16 @@ public sealed class ParquetService : IDisposable
 
     public void Dispose()
     {
-        _reader?.Dispose();
-        _reader = null;
+        DisposeReader();
         _indexEntryCache = null;
         _readerLock.Dispose();
     }
+
+    private sealed record ViewerDataColumn(
+        DataField Field,
+        Array Data,
+        int[]? DefinitionLevels,
+        int[]? RepetitionLevels);
 
     // --- Footer index payload parsing for stats ---
 

@@ -1,5 +1,12 @@
 using Parquet;
 using Parquet.Serialization;
+#if PARQUET_V6
+using TestParquetOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+using TestParquetSerializerOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+#else
+using TestParquetOptions = Parquet.ParquetOptions;
+using TestParquetSerializerOptions = Parquet.Serialization.ParquetSerializerOptions;
+#endif
 
 namespace Parquet.Query.Tests;
 
@@ -113,7 +120,7 @@ public sealed class ParquetQueryCacheTests : IAsyncLifetime
                 new TestRow { Id = 3, Country = "US", Name = "charlie", Age = 30 }
             },
             filePath,
-            new ParquetSerializerOptions
+            new TestParquetSerializerOptions
             {
                 RowGroupSize = 1
             });
@@ -149,7 +156,7 @@ public sealed class ParquetQueryCacheTests : IAsyncLifetime
 
         public async ValueTask<IParquetReaderLease> RentAsync(
             string filePath,
-            ParquetOptions? parquetOptions = null,
+            Parquet.ParquetOptions? parquetOptions = null,
             CancellationToken cancellationToken = default)
         {
             RentCount++;
@@ -194,7 +201,11 @@ public sealed class ParquetQueryCacheTests : IAsyncLifetime
                 }
 
                 _disposed = true;
+#if PARQUET_V6
+                await Reader.DisposeAsync();
+#else
                 Reader.Dispose();
+#endif
                 _stream.Dispose();
             }
         }

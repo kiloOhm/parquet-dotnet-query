@@ -37,7 +37,7 @@ public sealed class ParquetWritePlan
     /// <summary>
     /// Gets the serializer options that will be applied when writing.
     /// </summary>
-    public ParquetSerializerOptions SerializerOptions => _serializerOptions.ToSerializerOptions();
+    public QueryParquetSerializerOptions SerializerOptions => _serializerOptions.ToSerializerOptions();
 
     /// <summary>
     /// Gets the column mappings discovered for the row type.
@@ -49,7 +49,7 @@ public sealed class ParquetWritePlan
     /// </summary>
     public IReadOnlyList<ParquetIndexDescriptor> IndexDescriptors { get; }
 
-    internal ParquetSerializerOptions CreateSerializerOptions()
+    internal QueryParquetSerializerOptions CreateSerializerOptions()
     {
         var serializerOptions = _serializerOptions.ToSerializerOptions();
         var bloomFilterColumns = IndexDescriptors
@@ -63,12 +63,17 @@ public sealed class ParquetWritePlan
             return serializerOptions;
         }
 
+#if PARQUET_V6
+        var parquetOptions = serializerOptions;
+#else
         serializerOptions.ParquetOptions ??= new Parquet.ParquetOptions();
+        var parquetOptions = serializerOptions.ParquetOptions;
+#endif
         do
         {
-            if (!serializerOptions.ParquetOptions.BloomFilterOptionsByColumn.ContainsKey(enumerator.Current))
+            if (!parquetOptions.BloomFilterOptionsByColumn.ContainsKey(enumerator.Current))
             {
-                serializerOptions.ParquetOptions.BloomFilterOptionsByColumn[enumerator.Current] = new Parquet.ParquetOptions.BloomFilterOptions
+                parquetOptions.BloomFilterOptionsByColumn[enumerator.Current] = new Parquet.ParquetOptions.BloomFilterOptions
                 {
                     EnableBloomFilters = true
                 };

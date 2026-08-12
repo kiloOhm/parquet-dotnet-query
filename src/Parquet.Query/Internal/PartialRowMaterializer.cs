@@ -12,21 +12,22 @@ internal static class PartialRowMaterializer<TSource>
     where TSource : class, new()
 {
     public static async Task<IReadOnlyList<TSource>> ReadRowGroupAsync(
+        string filePath,
         ParquetReader reader,
         int rowGroupIndex,
         SourceMaterializationPlan<TSource> plan,
-        ParquetSerializerOptions? serializerOptions,
+        QueryParquetSerializerOptions? serializerOptions,
         IReadOnlyList<RowInterval>? candidateIntervals,
         CancellationToken cancellationToken)
     {
         if (plan.RequiresFullMaterialization)
         {
-            return await DeserializeRowGroupAsync(reader, rowGroupIndex, serializerOptions, cancellationToken);
+            return await DeserializeRowGroupAsync(filePath, reader, rowGroupIndex, serializerOptions, cancellationToken);
         }
 
         if (plan.DeferredBindings.Any(binding => binding.RequiresFullRowRead))
         {
-            return await DeserializeRowGroupAsync(reader, rowGroupIndex, serializerOptions, cancellationToken);
+            return await DeserializeRowGroupAsync(filePath, reader, rowGroupIndex, serializerOptions, cancellationToken);
         }
 
         var rowSet = await ReadFilterRowsAsync(reader, rowGroupIndex, plan, candidateIntervals, cancellationToken);
@@ -40,20 +41,18 @@ internal static class PartialRowMaterializer<TSource>
     }
 
     private static async Task<IReadOnlyList<TSource>> DeserializeRowGroupAsync(
+        string filePath,
         ParquetReader reader,
         int rowGroupIndex,
-        ParquetSerializerOptions? serializerOptions,
+        QueryParquetSerializerOptions? serializerOptions,
         CancellationToken cancellationToken)
     {
-        var rows = new List<TSource>();
-        await ParquetSerializer.DeserializeAsync(
+        return await ParquetSerializerCompatibility.DeserializeRowGroupAsync<TSource>(
+            filePath,
             reader,
             rowGroupIndex,
-            rows,
-            cancellationToken,
-            resultsAlreadyAllocated: false,
-            options: serializerOptions);
-        return rows.ToArray();
+            serializerOptions,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public static async Task<MaterializedRowSet<TSource>> ReadFilterRowsAsync(
@@ -113,7 +112,7 @@ internal static class PartialRowMaterializer<TSource>
     }
 
     public static async Task<object?[]> ReadColumnValuesAsync(
-        IParquetRowGroupReader rowGroupReader,
+        QueryParquetRowGroupReader rowGroupReader,
         ParquetSchema schema,
         string columnPath,
         IReadOnlyList<int> rowIndexes,
@@ -133,16 +132,16 @@ internal static class PartialRowMaterializer<TSource>
 
         if (field.IsArray)
         {
-            var arrayColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
-            return CopyIndexedValues(rowIndexes, arrayColumn.Data);
+            var arrayData = await ParquetColumnReaderCompatibility.ReadColumnAsync(rowGroupReader, field, cancellationToken);
+            return CopyIndexedValues(rowIndexes, arrayData);
         }
 
         var values = new object?[rowIndexes.Count];
         var fullCoverage = rowIndexes.Count == rowGroupReader.RowCount && IsIdentityMap(rowIndexes);
         if (fullCoverage)
         {
-            var denseColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
-            CopyDenseValues(values, denseColumn.Data);
+            var denseData = await ParquetColumnReaderCompatibility.ReadColumnAsync(rowGroupReader, field, cancellationToken);
+            CopyDenseValues(values, denseData);
             return values;
         }
 
@@ -155,8 +154,8 @@ internal static class PartialRowMaterializer<TSource>
         var pages = await TryReadSparsePagesAsync(rowGroupReader, field, rowIntervals, cancellationToken).ConfigureAwait(false);
         if (pages is null)
         {
-            var selectedColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
-            CopyIndexedValues(values, rowIndexes, selectedColumn.Data);
+            var selectedData = await ParquetColumnReaderCompatibility.ReadColumnAsync(rowGroupReader, field, cancellationToken);
+            CopyIndexedValues(values, rowIndexes, selectedData);
             return values;
         }
 
@@ -165,7 +164,7 @@ internal static class PartialRowMaterializer<TSource>
     }
 
     private static async Task PopulateBindingsAsync(
-        IParquetRowGroupReader rowGroupReader,
+        QueryParquetRowGroupReader rowGroupReader,
         ParquetSchema schema,
         IReadOnlyList<TSource> rows,
         IReadOnlyList<int> rowIndexes,
@@ -193,15 +192,15 @@ internal static class PartialRowMaterializer<TSource>
 
             if (field.IsArray)
             {
-                var arrayColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
-                AssignIndexedValues(binding, rows, rowIndexes, arrayColumn.Data);
+                var arrayData = await ParquetColumnReaderCompatibility.ReadColumnAsync(rowGroupReader, field, cancellationToken);
+                AssignIndexedValues(binding, rows, rowIndexes, arrayData);
                 continue;
             }
 
             if (fullCoverage)
             {
-                var denseColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
-                AssignDenseValues(binding, rows, denseColumn.Data);
+                var denseData = await ParquetColumnReaderCompatibility.ReadColumnAsync(rowGroupReader, field, cancellationToken);
+                AssignDenseValues(binding, rows, denseData);
                 continue;
             }
 
@@ -213,8 +212,8 @@ internal static class PartialRowMaterializer<TSource>
             var pages = await TryReadSparsePagesAsync(rowGroupReader, field, rowIntervals, cancellationToken).ConfigureAwait(false);
             if (pages is null)
             {
-                var selectedColumn = await rowGroupReader.ReadColumnAsync(field, cancellationToken);
-                AssignIndexedValues(binding, rows, rowIndexes, selectedColumn.Data);
+                var selectedData = await ParquetColumnReaderCompatibility.ReadColumnAsync(rowGroupReader, field, cancellationToken);
+                AssignIndexedValues(binding, rows, rowIndexes, selectedData);
                 continue;
             }
 
@@ -279,11 +278,7 @@ internal static class PartialRowMaterializer<TSource>
         SourceColumnBinding<TSource> binding,
         IReadOnlyList<TSource> rows,
         IReadOnlyList<int> rowIndexes,
-#if NET48
         IReadOnlyList<SparsePageData> pages)
-#else
-        IReadOnlyList<ParquetDataPage> pages)
-#endif
     {
         var denseIndex = 0;
         foreach (var page in pages)
@@ -295,7 +290,7 @@ internal static class PartialRowMaterializer<TSource>
                 denseIndex++;
             }
 
-            var data = page.Column.Data;
+            var data = page.Data;
             var pageDenseIndex = denseIndex;
             while (pageDenseIndex < rowIndexes.Count && rowIndexes[pageDenseIndex] < pageEnd)
             {
@@ -332,11 +327,7 @@ internal static class PartialRowMaterializer<TSource>
     private static void CopySparseValues(
         object?[] target,
         IReadOnlyList<int> rowIndexes,
-#if NET48
         IReadOnlyList<SparsePageData> pages)
-#else
-        IReadOnlyList<ParquetDataPage> pages)
-#endif
     {
         var denseIndex = 0;
         foreach (var page in pages)
@@ -348,7 +339,7 @@ internal static class PartialRowMaterializer<TSource>
                 denseIndex++;
             }
 
-            var data = page.Column.Data;
+            var data = page.Data;
             var pageDenseIndex = denseIndex;
             while (pageDenseIndex < rowIndexes.Count && rowIndexes[pageDenseIndex] < pageEnd)
             {
@@ -369,18 +360,16 @@ internal static class PartialRowMaterializer<TSource>
         }
     }
 
-    private static async Task<
-#if NET48
-        IReadOnlyList<SparsePageData>?
-#else
-        IReadOnlyList<ParquetDataPage>?
-#endif
-        > TryReadSparsePagesAsync(
-        IParquetRowGroupReader rowGroupReader,
+    private static async Task<IReadOnlyList<SparsePageData>?> TryReadSparsePagesAsync(
+        QueryParquetRowGroupReader rowGroupReader,
         DataField field,
         IReadOnlyList<RowInterval> rowIntervals,
         CancellationToken cancellationToken)
     {
+#if PARQUET_V6
+        await Task.CompletedTask.ConfigureAwait(false);
+        return null;
+#else
         object? pageReader =
 #if NET48
             await OpenColumnPageReaderCompatAsync(rowGroupReader, field, cancellationToken).ConfigureAwait(false);
@@ -401,23 +390,27 @@ internal static class PartialRowMaterializer<TSource>
         var pageOrdinals = PagePruner.SelectPageOrdinals(offsetIndex, rowIntervals, rowGroupReader.RowCount);
         if (pageOrdinals.Count == 0)
         {
-#if NET48
             return Array.Empty<SparsePageData>();
-#else
-            return Array.Empty<ParquetDataPage>();
-#endif
         }
 
 #if NET48
         return await ReadPagesCompatAsync(pageReader, pageOrdinals, cancellationToken).ConfigureAwait(false);
 #else
-        return await ((dynamic)pageReader).ReadPagesAsync(pageOrdinals, cancellationToken).ConfigureAwait(false);
+        var pages = await ((dynamic)pageReader).ReadPagesAsync(pageOrdinals, cancellationToken).ConfigureAwait(false);
+        var result = new List<SparsePageData>();
+        foreach (var page in pages)
+        {
+            result.Add(new SparsePageData(page.Location, page.RowCount, page.Column.Data));
+        }
+
+        return result;
+#endif
 #endif
     }
 
 #if NET48
     private static async Task<object?> OpenColumnPageReaderCompatAsync(
-        IParquetRowGroupReader rowGroupReader,
+        QueryParquetRowGroupReader rowGroupReader,
         DataField field,
         CancellationToken cancellationToken)
     {
@@ -505,7 +498,7 @@ internal static class PartialRowMaterializer<TSource>
             return false;
         }
 
-        sparsePage = new SparsePageData(location, Convert.ToInt64(rowCountObject), column);
+        sparsePage = new SparsePageData(location, Convert.ToInt64(rowCountObject), column.Data);
         return true;
     }
 #endif
@@ -552,23 +545,21 @@ internal static class PartialRowMaterializer<TSource>
         return rows;
     }
 
-#if NET48
     private sealed class SparsePageData
     {
-        public SparsePageData(PageLocation location, long rowCount, Parquet.Data.DataColumn column)
+        public SparsePageData(PageLocation location, long rowCount, Array data)
         {
             Location = location;
             RowCount = rowCount;
-            Column = column;
+            Data = data;
         }
 
         public PageLocation Location { get; }
 
         public long RowCount { get; }
 
-        public Parquet.Data.DataColumn Column { get; }
+        public Array Data { get; }
     }
-#endif
 }
 
 internal sealed class MaterializedRowSet<TSource>

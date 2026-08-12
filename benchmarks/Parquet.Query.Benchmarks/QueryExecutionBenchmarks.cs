@@ -43,11 +43,20 @@ public class QueryExecutionBenchmarks
         await ParquetSerializer.SerializeAsync(
             rows,
             _filePath,
+#if PARQUET_V6
+            new ParquetOptions
+            {
+                RowGroupSize = 4_000,
+                DataPageRowCountLimit = parquetOptions.DataPageRowCountLimit,
+                BloomFilterOptionsByColumn = parquetOptions.BloomFilterOptionsByColumn
+            });
+#else
             new ParquetSerializerOptions
             {
                 RowGroupSize = 4_000,
                 ParquetOptions = parquetOptions
             });
+#endif
     }
 
     [GlobalCleanup]
@@ -67,7 +76,11 @@ public class QueryExecutionBenchmarks
     public async Task<int> Deserialize_All_And_Filter_In_Memory()
     {
         var rows = await ParquetSerializer.DeserializeAsync<BenchmarkRow>(_filePath);
+#if PARQUET_V6
+        return rows.Data.Count(row => row.Country == "DE" && row.Age >= 50);
+#else
         return rows.Count(row => row.Country == "DE" && row.Age >= 50);
+#endif
     }
 
     [Benchmark]

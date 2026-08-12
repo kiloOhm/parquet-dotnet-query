@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <TargetFrameworks>net8.0;net48</TargetFrameworks>
+    <TargetFrameworks Condition="'$(UseLocalParquetProject)' == 'true'">net8.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
 
@@ -20,12 +21,16 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
-  <ItemGroup Condition="Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj') and '$(Configuration)' != 'Release'">
-    <ProjectReference Include="..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj" />
+  <ItemGroup Condition="'$(UseLocalParquetProject)' == 'true' and '$(TargetFramework)' != 'net48'">
+    <ProjectReference Include="$(ParquetProjectPath)" />
   </ItemGroup>
 
-  <ItemGroup Condition="!Exists('..\..\..\parquet-dotnet\src\Parquet\Parquet.csproj') or '$(Configuration)' == 'Release'">
-    <PackageReference Include="kiloOhm.Parquet.Net" Version="5.6.0-pre.3--kiloOhm.5" />
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0' and '$(UseLocalParquetProject)' != 'true'">
+    <PackageReference Include="kiloOhm.Parquet.Net" Version="$(ParquetNetVersion)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <PackageReference Include="kiloOhm.Parquet.Net" Version="$(LegacyParquetNetVersion)" />
   </ItemGroup>
 
   <ItemGroup>

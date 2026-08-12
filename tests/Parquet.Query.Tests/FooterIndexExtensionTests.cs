@@ -5,6 +5,13 @@ using Parquet.Query.Extensions.Writing;
 using Parquet.Query.Extensions.Writing.Attributes;
 using Parquet.Query.Extensions.Writing.Indexing;
 using Parquet.Serialization;
+#if PARQUET_V6
+using TestParquetOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+using TestParquetSerializerOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+#else
+using TestParquetOptions = Parquet.ParquetOptions;
+using TestParquetSerializerOptions = Parquet.Serialization.ParquetSerializerOptions;
+#endif
 
 namespace Parquet.Query.Tests;
 
@@ -27,7 +34,7 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
             },
             filePath,
             indexingStrategies: new[] { new FooterBitmapIndexingStrategy() },
-            serializerOptions: new ParquetSerializerOptions
+            serializerOptions: new TestParquetSerializerOptions
             {
                 RowGroupSize = 2
             });
@@ -69,7 +76,7 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
             },
             filePath,
             indexingStrategies: new[] { new FooterBitmapIndexingStrategy() },
-            serializerOptions: new ParquetSerializerOptions
+            serializerOptions: new TestParquetSerializerOptions
             {
                 RowGroupSize = 2
             });
@@ -106,10 +113,10 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
             },
             filePath,
             indexingStrategies: new[] { new FooterBitmapIndexingStrategy() },
-            serializerOptions: new ParquetSerializerOptions
+            serializerOptions: new TestParquetSerializerOptions
             {
                 RowGroupSize = 2,
-                ParquetOptions = new ParquetOptions
+                ParquetOptions = new TestParquetOptions
                 {
                     FooterEncryptionKey = footerKey
                 }
@@ -151,10 +158,10 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
             },
             filePath,
             indexingStrategies: new[] { new FooterBitmapIndexingStrategy() },
-            serializerOptions: new ParquetSerializerOptions
+            serializerOptions: new TestParquetSerializerOptions
             {
                 RowGroupSize = 2,
-                ParquetOptions = new ParquetOptions
+                ParquetOptions = new TestParquetOptions
                 {
                     UsePlaintextFooter = true,
                     FooterSigningKey = footerSigningKey,
@@ -199,7 +206,11 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
             indexingStrategies: new IParquetIndexingStrategy[] { new FooterSortOrderIndexingStrategy() });
 
         using var stream = System.IO.File.OpenRead(filePath);
+#if PARQUET_V6
+        await using var reader = await Parquet.ParquetReader.CreateAsync(stream);
+#else
         using var reader = await Parquet.ParquetReader.CreateAsync(stream);
+#endif
         var sortOrderPayload = reader.CustomMetadata
             .FirstOrDefault(entry => string.Equals(entry.Key, "parquet.query.index.sortorder.v1", StringComparison.Ordinal))
             .Value;
@@ -234,7 +245,7 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
                 new PlainFooterBitmapRow { Id = "4", Group = "delta" }
             },
             filePath,
-            new ParquetSerializerOptions
+            new TestParquetSerializerOptions
             {
                 RowGroupSize = 2
             });
@@ -267,7 +278,7 @@ public sealed class FooterIndexExtensionTests : IAsyncLifetime
             },
             filePath,
             indexingStrategies: new[] { new FooterBitmapIndexingStrategy() },
-            serializerOptions: new ParquetSerializerOptions
+            serializerOptions: new TestParquetSerializerOptions
             {
                 RowGroupSize = 2
             });

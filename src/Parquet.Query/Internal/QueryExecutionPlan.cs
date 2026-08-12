@@ -48,7 +48,7 @@ internal sealed class OpenQueryExecutionFile<TSource>
     public OpenQueryExecutionFile(
         QueryExecutionFilePlan<TSource> executionFilePlan,
         ParquetReader reader,
-        ParquetSerializerOptions? serializerOptions)
+        QueryParquetSerializerOptions? serializerOptions)
     {
         ExecutionFilePlan = executionFilePlan;
         Reader = reader;
@@ -59,7 +59,7 @@ internal sealed class OpenQueryExecutionFile<TSource>
 
     public ParquetReader Reader { get; }
 
-    public ParquetSerializerOptions? SerializerOptions { get; }
+    public QueryParquetSerializerOptions? SerializerOptions { get; }
 }
 
 internal sealed class ProjectionPlan<TSource, TResult>

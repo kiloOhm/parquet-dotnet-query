@@ -1,6 +1,7 @@
 using System.Text;
 using Parquet;
 using Parquet.Meta;
+using Parquet.Query.Internal;
 using Parquet.Query.Pushdown;
 using Parquet.Schema;
 
@@ -69,11 +70,19 @@ internal static class PagePruner
             if (predicateResult.PageIndexAvailable &&
                 context.DataFields.TryGetValue(predicate.ColumnPath, out DataField? field))
             {
+#if PARQUET_V6
+                var offsetIndex = await context.RowGroupReader.GetOrCreateOffsetIndexAsync(field, cancellationToken).ConfigureAwait(false);
+                if (offsetIndex?.PageLocations.Count > 0)
+                {
+                    selectedOffsetIndex = offsetIndex;
+                }
+#else
                 var pageReader = await context.RowGroupReader.OpenColumnPageReaderAsync(field, cancellationToken).ConfigureAwait(false);
                 if (pageReader.OffsetIndex.PageLocations.Count > 0)
                 {
                     selectedOffsetIndex = pageReader.OffsetIndex;
                 }
+#endif
             }
 
             if (survivingIntervals.Count == 0)
@@ -126,6 +135,31 @@ internal static class PagePruner
             return null;
         }
 
+#if PARQUET_V6
+        var persistedOffsetIndex = context.RowGroupReader.GetOffsetIndex(field);
+        var persistedColumnIndex = context.RowGroupReader.GetColumnIndex(field);
+        var offsetIndex = persistedOffsetIndex ??
+            await context.RowGroupReader.GetOrCreateOffsetIndexAsync(field, cancellationToken).ConfigureAwait(false);
+        var columnIndex = persistedColumnIndex ??
+            await context.RowGroupReader.GetOrCreateColumnIndexAsync(field, cancellationToken).ConfigureAwait(false);
+        if (columnIndex is null)
+        {
+            return null;
+        }
+
+        var usedFallbackIndex = persistedOffsetIndex is null || persistedColumnIndex is null;
+        var predicateIntervals = GetCandidateIntervals(predicate, field, offsetIndex, columnIndex, context.RowGroupReader.RowCount);
+        return new PagePruningResult(
+            predicateIntervals.Intervals,
+            offsetIndex.PageLocations.Count,
+            predicateIntervals.PageCount,
+            pageIndexAvailable: true,
+            usedFallbackIndex,
+            source: usedFallbackIndex ? "fallback" : "persisted",
+            reason: predicateIntervals.PageCount == offsetIndex.PageLocations.Count
+                ? "Page indexes were available but could not narrow the surviving page set."
+                : "Page indexes narrowed the surviving page set.");
+#else
         var pageReader = await context.RowGroupReader.OpenColumnPageReaderAsync(field, cancellationToken).ConfigureAwait(false);
         var hadPersistedColumnIndex = pageReader.ColumnIndex is not null;
         var columnIndex = await pageReader.GetColumnIndexAsync(cancellationToken).ConfigureAwait(false);
@@ -146,6 +180,7 @@ internal static class PagePruner
             reason: predicateIntervals.PageCount == pageReader.PageCount
                 ? "Page indexes were available but could not narrow the surviving page set."
                 : "Page indexes narrowed the surviving page set.");
+#endif
     }
 
     private static async ValueTask<PagePruningResult?> TryPruneWithExtensionsAsync<T>(
@@ -411,7 +446,7 @@ internal static class PagePruner
             return null;
         }
 
-        var type = Nullable.GetUnderlyingType(field.ClrType) ?? field.ClrType;
+        var type = ParquetColumnReaderCompatibility.GetLogicalType(field);
         if (type.IsEnum)
         {
             var underlyingType = Enum.GetUnderlyingType(type);

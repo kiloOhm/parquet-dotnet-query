@@ -1,72 +1,97 @@
-using Parquet.Serialization;
-
 namespace Parquet.Query.Extensions.Writing;
 
 internal sealed class SerializerOptionsSnapshot
 {
-    private SerializerOptionsSnapshot(
-        bool append,
-        Parquet.CompressionMethod compressionMethod,
-        System.IO.Compression.CompressionLevel compressionLevel,
-        int? rowGroupSize,
-        bool propertyNameCaseInsensitive,
-        Parquet.ParquetOptions? parquetOptions)
+    private readonly QueryParquetSerializerOptions _options;
+
+    private SerializerOptionsSnapshot(QueryParquetSerializerOptions options)
     {
-        Append = append;
-        CompressionMethod = compressionMethod;
-        CompressionLevel = compressionLevel;
-        RowGroupSize = rowGroupSize;
-        PropertyNameCaseInsensitive = propertyNameCaseInsensitive;
-        ParquetOptions = parquetOptions;
+        _options = options;
     }
 
-    public bool Append { get; }
+    public bool Append => _options.Append;
 
-    public Parquet.CompressionMethod CompressionMethod { get; }
+    public Parquet.CompressionMethod CompressionMethod => _options.CompressionMethod;
 
-    public System.IO.Compression.CompressionLevel CompressionLevel { get; }
+    public System.IO.Compression.CompressionLevel CompressionLevel => _options.CompressionLevel;
 
-    public int? RowGroupSize { get; }
+    public int? RowGroupSize => _options.RowGroupSize;
 
-    public bool PropertyNameCaseInsensitive { get; }
+    public bool PropertyNameCaseInsensitive => _options.PropertyNameCaseInsensitive;
 
-    public Parquet.ParquetOptions? ParquetOptions { get; }
+#if PARQUET_V6
+    public Parquet.ParquetOptions ParquetOptions => _options;
+#else
+    public Parquet.ParquetOptions? ParquetOptions => _options.ParquetOptions;
+#endif
 
-    public static SerializerOptionsSnapshot From(ParquetSerializerOptions options)
+    public static SerializerOptionsSnapshot From(QueryParquetSerializerOptions options)
     {
         Guard.NotNull(options, nameof(options));
-        return new SerializerOptionsSnapshot(
-            options.Append,
-            options.CompressionMethod,
-            options.CompressionLevel,
-            options.RowGroupSize,
-            options.PropertyNameCaseInsensitive,
-            options.ParquetOptions);
+        return new SerializerOptionsSnapshot(CloneOptions(options));
     }
 
-    public SerializerOptionsSnapshot WithOverrides(ParquetSerializerOptions options)
+    public SerializerOptionsSnapshot WithOverrides(QueryParquetSerializerOptions options)
     {
         Guard.NotNull(options, nameof(options));
-        return new SerializerOptionsSnapshot(
-            options.Append,
-            options.CompressionMethod,
-            options.CompressionLevel,
-            options.RowGroupSize,
-            options.PropertyNameCaseInsensitive,
-            options.ParquetOptions);
+        return new SerializerOptionsSnapshot(CloneOptions(options));
     }
 
-    public ParquetSerializerOptions ToSerializerOptions() =>
-        new()
+    public QueryParquetSerializerOptions ToSerializerOptions() => CloneOptions(_options);
+
+    private static QueryParquetSerializerOptions CloneOptions(QueryParquetSerializerOptions source)
+    {
+#if PARQUET_V6
+        var clone = new Parquet.ParquetOptions
         {
-            Append = Append,
-            CompressionMethod = CompressionMethod,
-            CompressionLevel = CompressionLevel,
-            RowGroupSize = RowGroupSize,
-            PropertyNameCaseInsensitive = PropertyNameCaseInsensitive,
-            ParquetOptions = CloneParquetOptions(ParquetOptions)
+            Append = source.Append,
+            CompressionMethod = source.CompressionMethod,
+            CompressionLevel = source.CompressionLevel,
+            RowGroupSize = source.RowGroupSize,
+            PropertyNameCaseInsensitive = source.PropertyNameCaseInsensitive,
+            TreatByteArrayAsString = source.TreatByteArrayAsString,
+            TreatBigIntegersAsDates = source.TreatBigIntegersAsDates,
+            UseDateOnlyTypeForDates = source.UseDateOnlyTypeForDates,
+            DictionaryEncodingThreshold = source.DictionaryEncodingThreshold,
+            DictionaryEncodingSampleSize = source.DictionaryEncodingSampleSize,
+            DataPageRowCountLimit = source.DataPageRowCountLimit,
+            MaximumSmallPoolFreeBytes = source.MaximumSmallPoolFreeBytes,
+            MaximumLargePoolFreeBytes = source.MaximumLargePoolFreeBytes,
+            UseBigDecimal = source.UseBigDecimal,
+            Encryption = source.Encryption,
+            Decryption = source.Decryption
         };
 
+        foreach (var entry in source.ColumnEncodingHints)
+        {
+            clone.ColumnEncodingHints[entry.Key] = entry.Value;
+        }
+
+        foreach (var entry in source.BloomFilterOptionsByColumn)
+        {
+            clone.BloomFilterOptionsByColumn[entry.Key] = new Parquet.ParquetOptions.BloomFilterOptions
+            {
+                EnableBloomFilters = entry.Value.EnableBloomFilters,
+                BloomFilterFpp = entry.Value.BloomFilterFpp,
+                BloomFilterBitsPerValueOverride = entry.Value.BloomFilterBitsPerValueOverride
+            };
+        }
+
+        return clone;
+#else
+        return new Parquet.Serialization.ParquetSerializerOptions
+        {
+            Append = source.Append,
+            CompressionMethod = source.CompressionMethod,
+            CompressionLevel = source.CompressionLevel,
+            RowGroupSize = source.RowGroupSize,
+            PropertyNameCaseInsensitive = source.PropertyNameCaseInsensitive,
+            ParquetOptions = CloneParquetOptions(source.ParquetOptions)
+        };
+#endif
+    }
+
+#if !PARQUET_V6
     private static Parquet.ParquetOptions? CloneParquetOptions(Parquet.ParquetOptions? source)
     {
         if (source is null)
@@ -101,23 +126,24 @@ internal sealed class SerializerOptionsSnapshot
             ColumnKeyResolver = source.ColumnKeyResolver
         };
 
-        foreach (var kvp in source.BloomFilterOptionsByColumn)
+        foreach (var entry in source.BloomFilterOptionsByColumn)
         {
-            clone.BloomFilterOptionsByColumn[kvp.Key] = new Parquet.ParquetOptions.BloomFilterOptions
+            clone.BloomFilterOptionsByColumn[entry.Key] = new Parquet.ParquetOptions.BloomFilterOptions
             {
-                EnableBloomFilters = kvp.Value.EnableBloomFilters,
-                BloomFilterFpp = kvp.Value.BloomFilterFpp,
-                BloomFilterBitsPerValueOverride = kvp.Value.BloomFilterBitsPerValueOverride
+                EnableBloomFilters = entry.Value.EnableBloomFilters,
+                BloomFilterFpp = entry.Value.BloomFilterFpp,
+                BloomFilterBitsPerValueOverride = entry.Value.BloomFilterBitsPerValueOverride
             };
         }
 
-        foreach (var kvp in source.ColumnKeys)
+        foreach (var entry in source.ColumnKeys)
         {
-            clone.ColumnKeys[kvp.Key] = new Parquet.ParquetOptions.ColumnKeySpec(
-                kvp.Value.Key,
-                kvp.Value.KeyMetadata?.ToArray());
+            clone.ColumnKeys[entry.Key] = new Parquet.ParquetOptions.ColumnKeySpec(
+                entry.Value.Key,
+                entry.Value.KeyMetadata?.ToArray());
         }
 
         return clone;
     }
+#endif
 }

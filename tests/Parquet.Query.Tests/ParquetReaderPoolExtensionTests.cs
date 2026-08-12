@@ -1,6 +1,13 @@
 using Parquet;
 using Parquet.Query.Extensions.Pooling;
 using Parquet.Serialization;
+#if PARQUET_V6
+using TestParquetOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+using TestParquetSerializerOptions = Parquet.Query.Tests.CompatibilityParquetOptions;
+#else
+using TestParquetOptions = Parquet.ParquetOptions;
+using TestParquetSerializerOptions = Parquet.Serialization.ParquetSerializerOptions;
+#endif
 
 namespace Parquet.Query.Tests;
 
@@ -82,7 +89,7 @@ public sealed class ParquetReaderPoolExtensionTests : IAsyncLifetime
             return;
         }
 
-        var parquetOptions = new ParquetOptions
+        var parquetOptions = new TestParquetOptions
         {
             FooterEncryptionKey = footerKey
         };
@@ -179,15 +186,15 @@ public sealed class ParquetReaderPoolExtensionTests : IAsyncLifetime
     private static Task WriteRowsAsync(
         string filePath,
         IReadOnlyCollection<PoolRow> rows,
-        Action<ParquetOptions>? configureOptions = null)
+        Action<TestParquetOptions>? configureOptions = null)
     {
-        var parquetOptions = new ParquetOptions();
+        var parquetOptions = new TestParquetOptions();
         configureOptions?.Invoke(parquetOptions);
 
         return ParquetSerializer.SerializeAsync(
             rows,
             filePath,
-            new ParquetSerializerOptions
+            new TestParquetSerializerOptions
             {
                 RowGroupSize = 2,
                 ParquetOptions = parquetOptions

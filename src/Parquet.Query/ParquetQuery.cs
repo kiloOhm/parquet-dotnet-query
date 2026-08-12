@@ -377,8 +377,13 @@ public sealed class ParquetQuery<TSource, TResult>
     public ParquetQuery<TSource, TResult> WithFooterKey(string footerEncryptionKey, byte[]? keyMetadata = null) =>
         ConfigureParquetOptions(options =>
         {
+#if PARQUET_V6
+            options.Decryption ??= new ParquetDecryptionOptions();
+            options.Decryption.FooterKey = Encoding.UTF8.GetBytes(footerEncryptionKey);
+#else
             options.FooterEncryptionKey = footerEncryptionKey;
             options.FooterEncryptionKeyMetadata = keyMetadata?.ToArray();
+#endif
         });
 
     /// <summary>
@@ -390,8 +395,13 @@ public sealed class ParquetQuery<TSource, TResult>
     public ParquetQuery<TSource, TResult> WithFooterSigningKey(string footerSigningKey, byte[]? keyMetadata = null) =>
         ConfigureParquetOptions(options =>
         {
+#if PARQUET_V6
+            options.Decryption ??= new ParquetDecryptionOptions();
+            options.Decryption.FooterKey = Encoding.UTF8.GetBytes(footerSigningKey);
+#else
             options.FooterSigningKey = footerSigningKey;
             options.FooterSigningKeyMetadata = keyMetadata?.ToArray();
+#endif
         });
 
     /// <summary>
@@ -400,7 +410,11 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <param name="enabled"><see langword="true"/> to use plaintext footers; otherwise <see langword="false"/>.</param>
     /// <returns>A new query with the footer mode applied.</returns>
     public ParquetQuery<TSource, TResult> UsePlaintextFooter(bool enabled = true) =>
+#if PARQUET_V6
+        ConfigureParquetOptions(_ => { });
+#else
         ConfigureParquetOptions(options => options.UsePlaintextFooter = enabled);
+#endif
 
     /// <summary>
     /// Configures the AAD prefix used for encrypted parquet files.
@@ -411,8 +425,13 @@ public sealed class ParquetQuery<TSource, TResult>
     public ParquetQuery<TSource, TResult> WithAadPrefix(string aadPrefix, bool supplyOutOfBand = false) =>
         ConfigureParquetOptions(options =>
         {
+#if PARQUET_V6
+            options.Decryption ??= new ParquetDecryptionOptions();
+            options.Decryption.AadPrefix = Encoding.UTF8.GetBytes(aadPrefix);
+#else
             options.AADPrefix = aadPrefix;
             options.SupplyAadPrefix = supplyOutOfBand;
+#endif
         });
 
     /// <summary>
@@ -421,7 +440,11 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <param name="enabled"><see langword="true"/> to enable CTR variants; otherwise <see langword="false"/>.</param>
     /// <returns>A new query with the encryption setting applied.</returns>
     public ParquetQuery<TSource, TResult> UseCtrVariant(bool enabled = true) =>
+#if PARQUET_V6
+        ConfigureParquetOptions(_ => { });
+#else
         ConfigureParquetOptions(options => options.UseCtrVariant = enabled);
+#endif
 
     /// <summary>
     /// Configures how column encryption keys are resolved.
@@ -429,7 +452,15 @@ public sealed class ParquetQuery<TSource, TResult>
     /// <param name="resolver">A callback that resolves keys for a column path and optional key metadata.</param>
     /// <returns>A new query with the resolver applied.</returns>
     public ParquetQuery<TSource, TResult> WithColumnKeyResolver(Func<IReadOnlyList<string>, byte[]?, string?> resolver) =>
+#if PARQUET_V6
+        ConfigureParquetOptions(options =>
+        {
+            options.Decryption ??= new ParquetDecryptionOptions();
+            options.Decryption.KeyRetriever = new DelegateKeyRetriever(resolver);
+        });
+#else
         ConfigureParquetOptions(options => options.ColumnKeyResolver = resolver);
+#endif
 
     /// <summary>
     /// Builds a plan that describes which files, row groups, pages, and columns the query will read.
@@ -640,6 +671,7 @@ public sealed class ParquetQuery<TSource, TResult>
                 if (materializationPlan.RequiresFullMaterialization)
                 {
                     var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
+                        file.FilePath,
                         reader,
                         rowGroup.Index,
                         materializationPlan,
@@ -685,7 +717,7 @@ public sealed class ParquetQuery<TSource, TResult>
                     projectionPlan.IsDirectScalar &&
                     isRowFilterTrivial)
                 {
-                    foreach (var result in await ReadProjectedValuesAsync(reader, rowGroup.Index, rowGroup.RowCount, serializerOptions, projectionPlan, rowGroup.CandidateIntervals, cancellationToken))
+                    foreach (var result in await ReadProjectedValuesAsync(file.FilePath, reader, rowGroup.Index, rowGroup.RowCount, serializerOptions, projectionPlan, rowGroup.CandidateIntervals, cancellationToken))
                     {
                         yield return result;
                     }
@@ -696,6 +728,7 @@ public sealed class ParquetQuery<TSource, TResult>
                 if (materializationPlan.RequiresFullMaterialization)
                 {
                     var batch = await PartialRowMaterializer<TSource>.ReadRowGroupAsync(
+                        file.FilePath,
                         reader,
                         rowGroup.Index,
                         materializationPlan,
@@ -729,7 +762,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
                 if (projectionPlan.IsDirectScalar)
                 {
-                    foreach (var result in await ProjectDirectScalarResultsAsync(reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
+                    foreach (var result in await ProjectDirectScalarResultsAsync(file.FilePath, reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
                     {
                         yield return result;
                     }
@@ -739,7 +772,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
                 if (projectionPlan.IsVectorized)
                 {
-                    foreach (var result in await ProjectVectorizedResultsAsync(reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
+                    foreach (var result in await ProjectVectorizedResultsAsync(file.FilePath, reader, rowGroup.Index, serializerOptions, materializationPlan, projectionPlan, rowSet, selectedIndexes, cancellationToken))
                     {
                         yield return result;
                     }
@@ -749,7 +782,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
                 if (materializationPlan.DeferredBindings.Any(binding => binding.RequiresFullRowRead))
                 {
-                    foreach (var result in await ProjectFromFullRowsAsync(rowGroup.Index, reader, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken))
+                    foreach (var result in await ProjectFromFullRowsAsync(file.FilePath, rowGroup.Index, reader, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken))
                     {
                         yield return result;
                     }
@@ -831,13 +864,41 @@ public sealed class ParquetQuery<TSource, TResult>
         return count;
     }
 
-    private ParquetSerializerOptions? CreateSerializerOptions() =>
+    private QueryParquetSerializerOptions? CreateSerializerOptions() =>
         _parquetOptions is null
             ? null
-            : new ParquetSerializerOptions
+#if PARQUET_V6
+            : ParquetOptionsFactory.Clone(_parquetOptions);
+#else
+            : new QueryParquetSerializerOptions
             {
                 ParquetOptions = _parquetOptions
             };
+#endif
+
+#if PARQUET_V6
+    private sealed class DelegateKeyRetriever : IParquetKeyRetriever
+    {
+        private readonly Func<IReadOnlyList<string>, byte[]?, string?> _resolver;
+
+        public DelegateKeyRetriever(Func<IReadOnlyList<string>, byte[]?, string?> resolver)
+        {
+            _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
+        }
+
+        public ReadOnlyMemory<byte> GetKey(ReadOnlyMemory<byte> keyMetadata)
+            => GetKey(columnPath: null, keyMetadata);
+
+        public ReadOnlyMemory<byte> GetKey(string? columnPath, ReadOnlyMemory<byte> keyMetadata)
+        {
+            IReadOnlyList<string> path = string.IsNullOrEmpty(columnPath)
+                ? Array.Empty<string>()
+                : columnPath.Split(new[] { '.' }, StringSplitOptions.RemoveEmptyEntries);
+            var key = _resolver(path, keyMetadata.ToArray());
+            return key is null ? ReadOnlyMemory<byte>.Empty : Encoding.UTF8.GetBytes(key);
+        }
+    }
+#endif
 
     private void EnsureStrictPushdown()
     {
@@ -977,24 +1038,23 @@ public sealed class ParquetQuery<TSource, TResult>
     }
 
     private static async Task<IReadOnlyList<TResult>> ReadProjectedValuesAsync(
+        string filePath,
         ParquetReader reader,
         int rowGroupIndex,
         long rowGroupRowCount,
-        ParquetSerializerOptions? serializerOptions,
+        QueryParquetSerializerOptions? serializerOptions,
         ProjectionPlan<TSource, TResult> projectionPlan,
         IReadOnlyList<RowInterval> candidateIntervals,
         CancellationToken cancellationToken)
     {
         if (projectionPlan.DirectScalarBinding?.RequiresFullRowRead == true)
         {
-            var fullRows = new List<TSource>();
-            await ParquetSerializer.DeserializeAsync(
+            var fullRows = await ParquetSerializerCompatibility.DeserializeRowGroupAsync<TSource>(
+                filePath,
                 reader,
                 rowGroupIndex,
-                fullRows,
-                cancellationToken,
-                resultsAlreadyAllocated: false,
-                options: serializerOptions);
+                serializerOptions,
+                cancellationToken).ConfigureAwait(false);
             return fullRows.Select(projectionPlan.ProjectRow).ToArray();
         }
 
@@ -1014,9 +1074,10 @@ public sealed class ParquetQuery<TSource, TResult>
     }
 
     private static async Task<IReadOnlyList<TResult>> ProjectDirectScalarResultsAsync(
+        string filePath,
         ParquetReader reader,
         int rowGroupIndex,
-        ParquetSerializerOptions? serializerOptions,
+        QueryParquetSerializerOptions? serializerOptions,
         SourceMaterializationPlan<TSource> materializationPlan,
         ProjectionPlan<TSource, TResult> projectionPlan,
         MaterializedRowSet<TSource> rowSet,
@@ -1027,7 +1088,7 @@ public sealed class ParquetQuery<TSource, TResult>
             ?? throw new InvalidOperationException("The projection plan did not contain a direct scalar binding.");
         if (binding.RequiresFullRowRead)
         {
-            return await ProjectFromFullRowsAsync(rowGroupIndex, reader, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken);
+            return await ProjectFromFullRowsAsync(filePath, rowGroupIndex, reader, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken);
         }
 
         if (materializationPlan.FilterBindings.Any(filterBinding => string.Equals(filterBinding.MemberPath, binding.MemberPath, StringComparison.Ordinal)))
@@ -1050,9 +1111,10 @@ public sealed class ParquetQuery<TSource, TResult>
     }
 
     private static async Task<IReadOnlyList<TResult>> ProjectVectorizedResultsAsync(
+        string filePath,
         ParquetReader reader,
         int rowGroupIndex,
-        ParquetSerializerOptions? serializerOptions,
+        QueryParquetSerializerOptions? serializerOptions,
         SourceMaterializationPlan<TSource> materializationPlan,
         ProjectionPlan<TSource, TResult> projectionPlan,
         MaterializedRowSet<TSource> rowSet,
@@ -1066,7 +1128,7 @@ public sealed class ParquetQuery<TSource, TResult>
 
         if (projectionPlan.VectorizedBindings.Any(binding => binding.RequiresFullRowRead))
         {
-            return await ProjectFromFullRowsAsync(rowGroupIndex, reader, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken);
+            return await ProjectFromFullRowsAsync(filePath, rowGroupIndex, reader, serializerOptions, projectionPlan, materializationPlan, rowSet, selectedIndexes, cancellationToken);
         }
 
         var selectedRowIndexes = selectedIndexes
@@ -1113,23 +1175,22 @@ public sealed class ParquetQuery<TSource, TResult>
     }
 
     private static async Task<IReadOnlyList<TResult>> ProjectFromFullRowsAsync(
+        string filePath,
         int rowGroupIndex,
         ParquetReader reader,
-        ParquetSerializerOptions? serializerOptions,
+        QueryParquetSerializerOptions? serializerOptions,
         ProjectionPlan<TSource, TResult> projectionPlan,
         SourceMaterializationPlan<TSource> materializationPlan,
         MaterializedRowSet<TSource> rowSet,
         IReadOnlyList<int> selectedIndexes,
         CancellationToken cancellationToken)
     {
-        var fullRows = new List<TSource>();
-        await ParquetSerializer.DeserializeAsync(
+        var fullRows = await ParquetSerializerCompatibility.DeserializeRowGroupAsync<TSource>(
+            filePath,
             reader,
             rowGroupIndex,
-            fullRows,
-            cancellationToken,
-            resultsAlreadyAllocated: false,
-            options: serializerOptions);
+            serializerOptions,
+            cancellationToken).ConfigureAwait(false);
         foreach (var binding in materializationPlan.DeferredBindings)
         {
             for (var index = 0; index < selectedIndexes.Count; index++)

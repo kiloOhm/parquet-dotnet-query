@@ -40,7 +40,7 @@ public static class ParquetWritePlanBuilder
     /// <typeparam name="T">The row type to inspect.</typeparam>
     /// <param name="serializerOptions">Optional serializer overrides for the plan.</param>
     /// <returns>The generated write plan.</returns>
-    public static ParquetWritePlan Build<T>(ParquetSerializerOptions? serializerOptions = null) => Build(typeof(T), serializerOptions);
+    public static ParquetWritePlan Build<T>(QueryParquetSerializerOptions? serializerOptions = null) => Build(typeof(T), serializerOptions);
 
     /// <summary>
     /// Builds a write plan for a row type.
@@ -48,7 +48,7 @@ public static class ParquetWritePlanBuilder
     /// <param name="rowType">The row type to inspect.</param>
     /// <param name="serializerOptions">Optional serializer overrides for the plan.</param>
     /// <returns>The generated write plan.</returns>
-    public static ParquetWritePlan Build(Type rowType, ParquetSerializerOptions? serializerOptions = null)
+    public static ParquetWritePlan Build(Type rowType, QueryParquetSerializerOptions? serializerOptions = null)
     {
         Guard.NotNull(rowType, nameof(rowType));
 
@@ -144,7 +144,7 @@ public static class ParquetWritePlanBuilder
 
         public static CachedWritePlan Create(Type rowType, Func<Type, SerializableMember[]> getSerializableMembers)
         {
-            var schema = Parquet.Serialization.TypeExtensions.GetParquetSchema(rowType, forWriting: false);
+            var schema = rowType.GetParquetSchema(forWriting: false);
             var columns = new List<ParquetColumnPlan>();
             var indexes = new List<ParquetIndexDescriptor>();
 
@@ -171,7 +171,7 @@ public static class ParquetWritePlanBuilder
                 new ReadOnlyCollection<ParquetIndexDescriptor>(indexes));
         }
 
-        public ParquetWritePlan CreatePlan(ParquetSerializerOptions serializerOptions) =>
+        public ParquetWritePlan CreatePlan(QueryParquetSerializerOptions serializerOptions) =>
             new(
                 RowType,
                 Schema,
@@ -181,7 +181,7 @@ public static class ParquetWritePlanBuilder
 
         private static SerializerOptionsSnapshot CreateDefaultOptions(Type rowType)
         {
-            var options = new ParquetSerializerOptions();
+            var options = new QueryParquetSerializerOptions();
             var attribute = rowType.GetCustomAttribute<ParquetWriteOptionsAttribute>();
             if (attribute is not null)
             {

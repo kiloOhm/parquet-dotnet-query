@@ -81,23 +81,41 @@ internal static class ParquetFooterMetadata
         Guard.NotNullOrWhiteSpace(filePath, nameof(filePath));
         Guard.NotNull(metadata, nameof(metadata));
 
+#if PARQUET_V6
+        await ParquetFooter.UpdateCustomMetadataAsync(
+            filePath,
+            metadata,
+            ParquetOptionsFactory.Clone(parquetOptions),
+            cancellationToken).ConfigureAwait(false);
+#else
         var fileBytes = await AsyncCompatibility.ReadAllBytesAsync(filePath, cancellationToken).ConfigureAwait(false);
         var readOptions = ParquetOptionsFactory.Clone(parquetOptions);
 
         FileMetaData footerMetadata;
         using (var input = new MemoryStream(fileBytes, writable: false))
-        using (var reader = await ParquetReader.CreateAsync(
+        {
+            var reader = await ParquetReader.CreateAsync(
             input,
             readOptions,
             leaveStreamOpen: false,
-            cancellationToken: cancellationToken).ConfigureAwait(false))
-        {
-            footerMetadata = reader.Metadata!;
-            footerMetadata.KeyValueMetadata = reader.CustomMetadata
-                .Concat(metadata)
-                .GroupBy(entry => entry.Key, StringComparer.Ordinal)
-                .Select(group => new KeyValue { Key = group.Key, Value = group.Last().Value })
-                .ToList();
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                footerMetadata = reader.Metadata!;
+                footerMetadata.KeyValueMetadata = reader.CustomMetadata
+                    .Concat(metadata)
+                    .GroupBy(entry => entry.Key, StringComparer.Ordinal)
+                    .Select(group => new KeyValue { Key = group.Key, Value = group.Last().Value })
+                    .ToList();
+            }
+            finally
+            {
+#if PARQUET_V6
+                await reader.DisposeAsync().ConfigureAwait(false);
+#else
+                reader.Dispose();
+#endif
+            }
         }
 
         var footerBytes = SerializeFooter(footerMetadata);
@@ -129,6 +147,7 @@ internal static class ParquetFooterMetadata
         }
 
         await AsyncCompatibility.WriteAllBytesAsync(filePath, output.ToArray(), cancellationToken).ConfigureAwait(false);
+#endif
     }
 
     private static byte[] SerializeFooter(FileMetaData footerMetadata)
@@ -164,6 +183,9 @@ internal static class ParquetFooterMetadata
         byte[] footerBytes,
         ParquetOptions? parquetOptions)
     {
+#if PARQUET_V6
+        throw new NotSupportedException("Encrypted footer metadata rewrites require a page/footer rewrite API that parquet-dotnet v6 does not currently expose.");
+#else
         if (parquetOptions is null || string.IsNullOrWhiteSpace(parquetOptions.FooterEncryptionKey))
         {
             throw new InvalidDataException($"{nameof(ParquetOptions.FooterEncryptionKey)} is required for files with encrypted footers.");
@@ -206,6 +228,7 @@ internal static class ParquetFooterMetadata
         output.Write(encryptedFooter, 0, encryptedFooter.Length);
         output.Write(BitConverter.GetBytes(cryptoMetadataLength + encryptedFooter.Length), 0, sizeof(int));
         output.Write(System.Text.Encoding.ASCII.GetBytes("PARE"), 0, 4);
+#endif
     }
 
     private static void WriteSignedPlaintextFooter(
@@ -214,7 +237,9 @@ internal static class ParquetFooterMetadata
         EncryptionAlgorithm algorithm,
         ParquetOptions? parquetOptions)
     {
-#if NET48
+#if PARQUET_V6
+        throw new NotSupportedException("Signed footer metadata rewrites require a page/footer rewrite API that parquet-dotnet v6 does not currently expose.");
+#elif NET48
         throw new PlatformNotSupportedException("Signed plaintext footer metadata rewrites require AES-GCM, which is not available on .NET Framework 4.8.");
 #else
         if (parquetOptions is null || string.IsNullOrWhiteSpace(parquetOptions.FooterSigningKey))
